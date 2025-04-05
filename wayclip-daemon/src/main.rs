@@ -1,3 +1,4 @@
+use std::fs;
 use tokio;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
@@ -22,7 +23,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("failed to write to socket: {}", e);
                     }
                 }
-                Err(e) => println!("failed to read from socket: {}", e),
+                Err(e) => {
+                    println!("failed to read from socket: {}", e);
+                    fs::remove_file("/tmp/wayclip-daemon.sock").unwrap_or_else(|_| {
+                        println!("Failed to remove socket file: {}", e);
+                    });
+                }
             }
         });
     }
