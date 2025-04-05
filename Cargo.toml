@@ -1,0 +1,2 @@
+[workspace]
+members = ["wayclip-shared", "wayclip-gui/src-tauri", "wayclip-daemon"]
