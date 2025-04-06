@@ -1,7 +1,8 @@
 [package]
-name = "wayclip-shared"
+name = "wayclip_shared"
 authors = ["konyogony"]
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+serde = "1.0.219"
