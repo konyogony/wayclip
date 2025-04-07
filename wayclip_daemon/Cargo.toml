@@ -5,6 +5,7 @@ authors = ["konyogony"]
 edition = "2021"
 
 [dependencies]
+wayclip_shared = { path = "../wayclip_shared" }
 daemonize = "0.5.0"
 tokio = { version = "1", features = ["full"] }
 tokio-uds = "0.2.7"

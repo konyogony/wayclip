@@ -4649,6 +4649,7 @@ dependencies = [
  "daemonize",
  "tokio",
  "tokio-uds",
+ "wayclip_shared",
 ]
 
 [[package]]
