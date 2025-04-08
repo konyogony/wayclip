@@ -11,6 +11,7 @@ export interface Route {
     path: string;
     icon: IconType;
     group: groups;
+    element: JSX.Element;
 }
 
 export enum categories {

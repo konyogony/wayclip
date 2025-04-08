@@ -1,3 +1,9 @@
+# Prerequisites
+
+- Wayland system, may work on X11 but not tested
+- Pipewire installed
+- Install `ffmpeg-full`
+
 # Roadmap
 
 - [ ] Background proccess (daemon)

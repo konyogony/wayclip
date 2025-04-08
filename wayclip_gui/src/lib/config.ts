@@ -1,38 +1,4 @@
-import { FaBell, FaClapperboard, FaGear, FaHeart, FaHouse } from '@vertisanpro/react-icons/fa6';
-import { Route, groups, Setting, categories } from '@/lib/types';
-
-export const sidebarRoutes: Route[] = [
-    {
-        name: 'Home',
-        path: '/',
-        icon: FaHouse,
-        group: groups.main,
-    },
-    {
-        name: 'All Clips',
-        path: '/all-clips',
-        icon: FaClapperboard,
-        group: groups.library,
-    },
-    {
-        name: 'Liked Clips',
-        path: '/liked-clips',
-        icon: FaHeart,
-        group: groups.library,
-    },
-    {
-        name: 'Notifications',
-        path: '/notifications',
-        icon: FaBell,
-        group: groups.settings,
-    },
-    {
-        name: 'Settings',
-        path: '/settings',
-        icon: FaGear,
-        group: groups.settings,
-    },
-];
+import { Setting, categories } from '@/lib/types';
 
 export const defaultSettings: Setting[] = [
     {
@@ -111,7 +77,7 @@ export const defaultSettings: Setting[] = [
     {
         name: 'Save location',
         description: 'The location to save the clips, starting from your home directory.',
-        tooltip: 'e.g. Videos/wayclip will be parsed as /home/user/Videos/wayclip. DO NOT include $HOME or ~',
+        tooltip: 'e.g. Videos/wayclip will be parsed as /home/user/Videos/wayclip',
         type: 'string',
         defaultValue: 'Videos/wayclip',
         storageKey: 'save_path_from_home_string',

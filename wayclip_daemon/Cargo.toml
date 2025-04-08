@@ -9,3 +9,5 @@ wayclip_shared = { path = "../wayclip_shared" }
 daemonize = "0.5.0"
 tokio = { version = "1", features = ["full"] }
 tokio-uds = "0.2.7"
+device_query = "3.0.1"
+chrono = "0.4.40"
