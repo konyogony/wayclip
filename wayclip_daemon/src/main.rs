@@ -14,7 +14,5 @@ fn main() {
         Err(e) => eprintln!("Error: {}", e),
     }
 
-    loop {
-        // ur service logic
-    }
+    loop {}
 }

@@ -24,7 +24,14 @@ export interface Setting {
     description?: string;
     tooltip?: string;
     type: 'string' | 'select' | 'boolean' | 'number';
-    defaultValue?: string | number | boolean;
+    options?: string[] | number[];
+    defaultValue: JsonValue;
+    currentValue?: JsonValue;
     storageKey: string;
     category: categories;
 }
+
+// JSON types (got from somewhere)
+export interface JsonArray extends Array<JsonValue> {}
+export type JsonValue = string | number | boolean | null | JsonObject | JsonArray;
+export type JsonObject = { [Key in string]?: JsonValue };

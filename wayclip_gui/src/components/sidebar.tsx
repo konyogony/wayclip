@@ -26,8 +26,8 @@ export const Sidebar = ({ routes }: SidebarProps) => {
             </button>
             <div
                 className={cn(
-                    'flex relative flex-col gap-6 p-4 shrink-0 w-1/6 3xl:w-1/8 bg-zinc-900 transition-all duration-200 ease-in-out h-screen shadow-lg z-20',
-                    isSidebarOpen ? 'translate-x-0' : '-translate-x-full',
+                    'flex relative flex-col gap-6 p-4 shrink-0  bg-zinc-900 transition-all duration-200 ease-in-out h-screen shadow-lg z-20',
+                    isSidebarOpen ? 'w-1/6 3xl:w-1/8' : 'w-0 overflow-hidden opacity-0 pointer-events-none cursor-none',
                 )}
             >
                 <span className='text-2xl font-bold mb-2 mx-auto'>Wayclip</span>

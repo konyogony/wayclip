@@ -13,22 +13,13 @@
   - [ ] Show all saved clips
   - [ ] Rename, delete, play, cut clips
   - [ ] Upload / Share clips
-  - [ ] Settings
-    - [ ] Clip name formatting
-      - [ ] Day
-      - [ ] Month
-      - [ ] Year
-      - [ ] Hour
-      - [ ] Minute
-      - [ ] Second
-      - [ ] Hash
-      - [ ] Custom text
-    - [ ] Video format (or maybe enforce only mp4)
-    - [ ] Clip length (30s, 1m, 2m, 5m, 10m)
-    - [ ] Storage location
+  - [x] Settings
+    - [x] Clip name formatting
+    - [x] Video format (or maybe enforce only mp4)
+    - [x] Clip length (30s, 1m, 2m, 5m, 10m)
+    - [x] Storage location
       - [ ] Maximum storage size
-    - [ ] Clip quality
-      - [ ] Resolution
-      - [ ] Bitrate
-      - [ ] FPS
-      - [ ] Include audio?
+    - [x] Clip quality
+      - [x] Resolution
+      - [x] FPS
+      - [x] Include audio?

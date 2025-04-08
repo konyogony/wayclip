@@ -1,58 +1,199 @@
+use dirs::{config_dir, home_dir};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashMap;
 use std::fs::{create_dir_all, read_to_string, write};
+use std::path::PathBuf;
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum JsonValue {
+    String(String),
+    Number(f64),
+    Boolean(bool),
+    Null,
+    Object(JsonObject),
+    Array(JsonArray),
+}
+
+pub type JsonArray = Vec<JsonValue>;
+pub type JsonObject = HashMap<String, JsonValue>;
 
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 pub struct Settings {
     pub clip_name_formatting: String,
+    pub clip_length_s: u16,
+    pub clip_resolution: String,
+    pub clip_fps: u16,
+    pub include_audio: bool,
+    pub audio_bitrate: u16,
+    pub video_codec: String,
+    pub audio_codec: String,
+    pub save_path_from_home_string: String,
+    pub save_shortcut: String,
+    pub open_gui_shortcut: String,
+    pub toggle_notifications: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            clip_name_formatting: String::from("%Y-%m-%d_%H:%M:%S"),
+            clip_length_s: 120,
+            clip_resolution: String::from("1920x1080"),
+            clip_fps: 30,
+            include_audio: true,
+            audio_bitrate: 128,
+            video_codec: String::from("h264"),
+            audio_codec: String::from("aac"),
+            save_path_from_home_string: String::from("Videos/wayclip"),
+            save_shortcut: String::from("Alt+C"),
+            open_gui_shortcut: String::from("Ctrl+Alt+C"),
+            toggle_notifications: true,
+        }
+    }
 }
 
 impl Settings {
-    pub fn new() -> Self {
-        let config_dir = dirs::config_dir().unwrap().join("wayclip");
-        let settings_path = config_dir.join("settings.json");
-
-        if !config_dir.exists() {
-            create_dir_all(&config_dir).unwrap();
-        }
-
-        if !settings_path.exists() {
-            let default_settings = Settings {
-                clip_name_formatting: String::from("%Y%m%d_%H%M%S"),
-            };
-            write(
-                &settings_path,
-                serde_json::to_string(&default_settings).unwrap(),
-            )
-            .unwrap();
-            return default_settings;
-        }
-
-        Self::load()
+    pub fn config_path() -> PathBuf {
+        config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("wayclip")
+            .join("settings.json")
     }
 
     pub fn load() -> Self {
-        let config_dir = dirs::config_dir().unwrap().join("wayclip");
-        let settings_path = config_dir.join("settings.json");
-
-        let settings_json = read_to_string(&settings_path).unwrap();
-        serde_json::from_str(&settings_json).unwrap()
-    }
-
-    pub fn update(key: &str, value: &str) {
-        let mut settings = Self::load();
-        match key {
-            "clip_name_formatting" => settings.clip_name_formatting = value.to_string(),
-            _ => panic!("invalid key"),
+        let path = Self::config_path();
+        if let Ok(data) = read_to_string(&path) {
+            serde_json::from_str(&data).unwrap_or_default()
+        } else {
+            Default::default()
         }
-
-        let config_dir = dirs::config_dir().unwrap().join("wayclip");
-        let settings_path = config_dir.join("settings.json");
-        write(&settings_path, serde_json::to_string(&settings).unwrap()).unwrap();
     }
 
     pub fn save(&self) {
-        let config_dir = dirs::config_dir().unwrap().join("wayclip");
-        let settings_path = config_dir.join("settings.json");
+        let path = Self::config_path();
+        if let Some(parent) = path.parent() {
+            let _ = create_dir_all(parent);
+        }
+        let _ = write(&path, serde_json::to_string_pretty(self).unwrap());
+    }
 
-        write(&settings_path, serde_json::to_string(self).unwrap()).unwrap();
+    pub fn update_key(key: &str, value: Value) -> Result<(), String> {
+        let mut settings = Self::load();
+        match key {
+            "clip_name_formatting" => {
+                settings.clip_name_formatting = Self::get_str(&value)?;
+            }
+            "clip_length_s" => {
+                settings.clip_length_s = Self::get_u16(&value)?;
+            }
+            "clip_resolution" => {
+                settings.clip_resolution = Self::get_str(&value)?;
+            }
+            "clip_fps" => {
+                settings.clip_fps = Self::get_u16(&value)?;
+            }
+            "include_audio" => {
+                settings.include_audio = Self::get_bool(&value)?;
+            }
+            "audio_bitrate" => {
+                settings.audio_bitrate = Self::get_u16(&value)?;
+            }
+            "video_codec" => {
+                settings.video_codec = Self::get_str(&value)?;
+            }
+            "audio_codec" => {
+                settings.audio_codec = Self::get_str(&value)?;
+            }
+            "save_path_from_home_string" => {
+                settings.save_path_from_home_string = Self::get_str_valid_path(&value)?;
+            }
+            "save_shortcut" => {
+                settings.save_shortcut = Self::get_shortcut(&value)?;
+            }
+            "open_gui_shortcut" => {
+                settings.open_gui_shortcut = Self::get_shortcut(&value)?;
+            }
+            "toggle_notifications" => {
+                settings.toggle_notifications = Self::get_bool(&value)?;
+            }
+            _ => return Err("Invalid key has been used!".into()),
+        }
+        settings.save();
+        Ok(())
+    }
+
+    fn get_str(value: &Value) -> Result<String, String> {
+        value
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or("expected string".into())
+    }
+
+    fn get_u16(value: &Value) -> Result<u16, String> {
+        value
+            .as_f64()
+            .map(|n| n as u16)
+            .ok_or("expected an u16".into())
+    }
+
+    fn get_bool(value: &Value) -> Result<bool, String> {
+        value.as_bool().ok_or("expected a boolean".into())
+    }
+
+    // Deletes spaces, checks if only +, Ctrl, Alt, Shift, Meta and Single characters used
+    fn get_shortcut(value: &Value) -> Result<String, String> {
+        let raw = value
+            .as_str()
+            .ok_or_else(|| "expected a string for shortcut".to_string())?;
+
+        let cleaned = raw.replace(' ', "");
+        let parts: Vec<&str> = cleaned.split('+').collect();
+
+        if parts.is_empty() {
+            return Err("shortcut cannot be empty".to_string());
+        }
+
+        let allowed_modifiers = vec!["Ctrl", "Alt", "Shift", "Meta"];
+        let mut has_non_modifier = false;
+
+        for part in &parts {
+            if allowed_modifiers.contains(part) {
+                continue;
+            }
+
+            // must be a single character like "A", "B", "1", etc
+            if part.len() == 1 && part.chars().all(|c| c.is_ascii_alphanumeric()) {
+                if has_non_modifier {
+                    return Err("only one non-modifier key allowed".to_string());
+                }
+                has_non_modifier = true;
+            } else {
+                return Err(format!("invalid key in shortcut: {}", part));
+            }
+        }
+
+        if !has_non_modifier {
+            return Err("missing non-modifier key (like 'A', 'Z', '1', etc)".to_string());
+        }
+
+        Ok(cleaned)
+    }
+
+    fn get_str_valid_path(value: &Value) -> Result<String, String> {
+        let rel_path = value
+            .as_str()
+            .ok_or_else(|| "expected a string for path".to_string())?;
+
+        let home_dir = home_dir().ok_or_else(|| "home dir not found".to_string())?;
+        let clean_path = rel_path.trim_start_matches('/'); // delete starting '/'
+        let full_path = home_dir.join(clean_path);
+
+        Ok(full_path.to_string_lossy().into_owned())
+    }
+
+    pub fn to_json() -> serde_json::Value {
+        serde_json::to_value(Self::load()).unwrap()
     }
 }

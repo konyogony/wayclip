@@ -3,5 +3,3 @@
 fn main() {
     gui_lib::run()
 }
-
-pub mod commands;
