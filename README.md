@@ -1,17 +1,19 @@
 # Prerequisites
 
-- Wayland system, may work on X11 but not tested
-- Pipewire installed
-- Install `ffmpeg-full`
+im not even sure atp
 
 # Roadmap
 
+1. dbus connection to xdg-desktop-portal
+2. request to capture screen
+3. pipe screenshare to ffmpeg as rawvideo
+4. ffmpeg uses segment_format and segment_wrap to have a circular buffer of a set size, somehow do it in ram?
+5. detect keybaord shortcut and save ffmpeg file permamently in set location
+6. restart ffmpeg buffer
+
 - [ ] Background proccess (daemon)
 
-  - [ ] Capture screen using pipewire and ffmpeg?
-  - [ ] Listen for keyboard events using `evdev` or some other tool
-  - [ ] Save last few minutes
-  - [ ] Pull settings from `.config/wayclip/settings.conf`
+  - [x] Pull settings from `.config/wayclip/settings.conf`
 
 - [ ] GUI using tauri
   - [x] Settup tauri and vite environment

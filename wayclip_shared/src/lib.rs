@@ -180,7 +180,7 @@ impl Settings {
 
         Ok(cleaned)
     }
-
+    // Check if its a home path already
     fn get_str_valid_path(value: &Value) -> Result<String, String> {
         let rel_path = value
             .as_str()
@@ -188,6 +188,9 @@ impl Settings {
 
         let home_dir = home_dir().ok_or_else(|| "home dir not found".to_string())?;
         let clean_path = rel_path.trim_start_matches('/'); // delete starting '/'
+        if clean_path.starts_with("home/") {
+            return Ok(clean_path.to_string());
+        }
         let full_path = home_dir.join(clean_path);
 
         Ok(full_path.to_string_lossy().into_owned())
