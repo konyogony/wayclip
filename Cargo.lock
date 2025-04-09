@@ -4765,6 +4765,7 @@ dependencies = [
  "signal-hook-registry",
  "socket2 0.5.9",
  "tokio-macros",
+ "tracing",
  "windows-sys 0.52.0",
 ]
 
@@ -5331,10 +5332,12 @@ dependencies = [
  "device_query",
  "ffmpeg-next",
  "pipewire",
+ "pipewire-sys",
  "portal-screencast",
  "tokio",
  "tokio-uds",
  "wayclip_shared",
+ "xdg-portal",
  "zbus 2.3.2",
 ]
 
@@ -6084,6 +6087,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "xdg-portal"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d48e60fc8dbb8af89f36580294dd6edbd88ba6b4878acf502295a26b162c534a"
+dependencies = [
+ "bitflags 2.9.0",
+ "serde",
+ "zbus 5.5.0",
+ "zvariant 5.4.0",
+]
+
+[[package]]
 name = "xml-rs"
 version = "0.8.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6188,6 +6203,7 @@ dependencies = [
  "serde",
  "serde_repr",
  "static_assertions",
+ "tokio",
  "tracing",
  "uds_windows",
  "windows-sys 0.59.0",

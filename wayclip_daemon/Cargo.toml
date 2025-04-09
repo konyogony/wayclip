@@ -16,3 +16,5 @@ pipewire = "0.8.0"
 portal-screencast = "0.1.0"
 ffmpeg-next = "7.1.0"
 zbus = { version = "2.3.2" }
+xdg-portal = "0.2.0"
+pipewire-sys = "0.8.0"
