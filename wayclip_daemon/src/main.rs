@@ -1,21 +1,15 @@
-use ashpd::{
-    desktop::{
-        screencast::{CursorMode, Screencast, SourceType as SourceTypeA},
-        PersistMode,
-    },
-    zbus::fdo::PropertiesProxy,
-};
+use ashpd::desktop::screencast::{CursorMode, Screencast, SourceType as SourceTypeA};
+use ashpd::desktop::PersistMode;
 use enumflags2::BitFlags;
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::collections::VecDeque;
+use std::fs::File;
+use std::io::ErrorKind;
+use std::os::fd::FromRawFd;
 use std::os::unix::io::{AsRawFd, OwnedFd};
 use std::sync::{Arc, Mutex};
-use std::{collections::VecDeque, os::fd::FromRawFd};
-use subprocess::{Exec, Redirection};
+use tokio::io::AsyncReadExt;
 use tokio::main;
-use xdg_portal::common::SourceType;
-use xdg_portal::portal::Portal;
-use xdg_portal::screencast::ScreencastReq;
+use tokio::time::{sleep, Duration, Instant};
 
 struct CircularBuffer {
     buffer: VecDeque<u8>,
@@ -33,7 +27,7 @@ impl CircularBuffer {
     fn push(&mut self, data: &[u8]) {
         for &byte in data.iter() {
             if self.buffer.len() == self.max_size {
-                self.buffer.pop_front(); // Remove oldest element
+                self.buffer.pop_front();
             }
             self.buffer.push_back(byte);
         }
@@ -48,126 +42,129 @@ impl CircularBuffer {
     }
 
     fn dump(&self) -> Vec<u8> {
-        self.buffer.iter().cloned().collect() // Return the current buffer data
+        self.buffer.iter().cloned().collect()
     }
 }
 
-// Create an Arc<Mutex<OwnedFd>> so that it's shared safely across async tasks.
 async fn capture_stream(
     fd: Arc<Mutex<OwnedFd>>,
     buffer: &mut CircularBuffer,
 ) -> std::io::Result<()> {
     println!("Starting capture_stream");
 
-    // Log the current status of the file descriptor
-    let fd_status = fd.lock().unwrap();
-    println!("Acquired lock, file descriptor status: {:?}", fd_status);
+    let stream_fd = {
+        let fd_lock = fd.lock().unwrap();
+        let raw_fd = fd_lock.as_raw_fd();
 
-    let mut stream = unsafe { File::from_raw_fd(fd_status.as_raw_fd()) };
-    let mut temp_buffer = [0u8; 1024]; // Adjust the buffer size as needed
+        let duped_fd = unsafe { libc::dup(raw_fd) };
+        if duped_fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        duped_fd
+    };
 
-    // Log the initial stream info
+    let stream = unsafe { File::from_raw_fd(stream_fd) };
     println!("Stream started with file descriptor: {:?}", stream);
 
+    let mut async_stream = tokio::fs::File::from(stream);
+    let mut temp_buffer = [0u8; 576];
+    let mut last_read_time = Instant::now();
+    let timeout_duration = Duration::from_secs(5);
+    let mut retry_delay = Duration::from_millis(10); // Initial delay
+
     loop {
-        let bytes_read = stream.read(&mut temp_buffer)?;
+        let read_result = async_stream.read(&mut temp_buffer).await;
 
-        if bytes_read == 0 {
-            // If no data was read, log and break the loop
-            println!("No more data to read, ending stream capture.");
-            break; // End of stream or no more data
-        }
+        match read_result {
+            Ok(bytes_read) => {
+                if bytes_read == 0 {
+                    println!("No more data to read, ending stream capture.");
+                    break;
+                }
 
-        println!("Read {} bytes from stream", bytes_read); // Log the amount of data read
+                println!("Read {} bytes from stream", bytes_read);
+                buffer.push(&temp_buffer[..bytes_read]);
+                last_read_time = Instant::now();
 
-        buffer.push(&temp_buffer[..bytes_read]);
+                // Reset retry delay on successful read
+                retry_delay = Duration::from_millis(10);
 
-        // If the buffer is full, log that the buffer is full and break
-        if buffer.is_full() {
-            println!("Buffer is full, ready to dump to disk");
-            break;
+                if buffer.is_full() {
+                    println!("Buffer is full, ready to dump to disk");
+                    break;
+                }
+            }
+            Err(e) => {
+                if e.kind() == ErrorKind::WouldBlock {
+                    let elapsed = last_read_time.elapsed();
+                    if elapsed > timeout_duration {
+                        println!("Timeout: No data for {:?}, stopping capture", elapsed);
+                        break;
+                    }
+
+                    println!("WouldBlock error, retrying after {:?}", retry_delay);
+                    tokio::time::sleep(retry_delay).await;
+
+                    // Increase retry delay, but with a maximum
+                    retry_delay = (retry_delay * 2).min(Duration::from_millis(500));
+                    continue;
+                } else {
+                    eprintln!("Error reading from stream: {:?}", e);
+                    break;
+                }
+            }
         }
     }
 
-    // Log when we're done with the capture
     println!("Capture stream ended, buffer size: {}", buffer.len());
-
     Ok(())
 }
 
 fn dump_to_mp4(raw_data: Vec<u8>, output_filename: &str) -> Result<(), String> {
-    // Create a temporary file to store raw data
     let temp_raw_path = "temp_raw_data.raw";
     std::fs::write(temp_raw_path, raw_data)
-        .map_err(|e| format!("Failed to write raw data to file: {:?}", e))?;
+        .map_err(|e| format!("Failed to write raw data: {}", e))?;
 
-    // Use ffmpeg to convert the raw data into an MP4 file
     let command = std::process::Command::new("ffmpeg")
-        .arg("-f")
-        .arg("rawvideo")
-        .arg("-pix_fmt")
-        .arg("yuv420p") // Use appropriate pixel format for raw video
-        .arg("-s")
-        .arg("1920x1080") // Set the resolution to match the raw video
-        .arg("-r")
-        .arg("30") // Set the framerate to 30 fps (adjust as needed)
-        .arg("-i")
-        .arg(temp_raw_path)
-        .arg("-c:v")
-        .arg("libx264")
-        .arg("-y") // Overwrite output file without asking
-        .arg(output_filename)
+        .args(&[
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "yuv420p",
+            "-s",
+            "2560x1440",
+            "-r",
+            "60",
+            "-i",
+            temp_raw_path,
+            "-c:v",
+            "libx264",
+            "-y",
+            output_filename,
+        ])
         .output()
-        .map_err(|e| format!("Failed to execute ffmpeg: {:?}", e))?;
+        .map_err(|e| format!("Failed to execute ffmpeg: {}", e))?;
 
     if !command.status.success() {
-        return Err("ffmpeg failed to encode the video".to_string());
+        eprintln!(
+            "ffmpeg stderr: {:?}",
+            String::from_utf8_lossy(&command.stderr)
+        );
+        return Err(format!("ffmpeg failed: {:?}", command.status));
     }
 
     Ok(())
 }
 
 #[tokio::main]
-async fn main() {
-    // Create a circular buffer to hold the raw stream data
-    let mut buffer = CircularBuffer::new(1024 * 1024 * 10); // 10MB buffer
+async fn main() -> ashpd::Result<()> {
+    let mut buffer = CircularBuffer::new(1024 * 1024 * 10);
 
-    // Stream 1: Capture data
-    match stream_1().await {
-        Ok(fd) => {
-            if let Err(e) = capture_stream(fd, &mut buffer).await {
-                eprintln!("Error capturing stream: {:?}", e);
-            }
-        }
-        Err(e) => eprintln!("Error starting stream 1: {:?}", e),
-    }
-
-    // Stream 2: Capture data
-    // match stream_2().await {
-    //     Ok(fd) => {
-    //         if let Err(e) = capture_stream(fd, &mut buffer).await {
-    //             eprintln!("Error capturing stream: {:?}", e);
-    //         }
-    //     }
-    //     Err(e) => eprintln!("Error starting stream 2: {:?}", e),
-    // }
-
-    // When ready to dump to MP4:
-    if buffer.len() == buffer.max_size {
-        println!("Buffer is full, ready to dump to MP4");
-        let raw_data = buffer.dump(); // Get the raw data
-        if let Err(e) = dump_to_mp4(raw_data, "output.mp4") {
-            eprintln!("Error dumping data to MP4: {:?}", e);
-        }
-    } else {
-        println!("Buffer is not full yet");
-    }
-}
-
-async fn stream_1() -> ashpd::Result<Arc<Mutex<OwnedFd>>> {
     let proxy = Screencast::new().await?;
     let session = proxy.create_session().await?;
     let source_types = BitFlags::<SourceTypeA>::from_flag(SourceTypeA::Monitor);
+
+    println!("Selecting sources...");
     proxy
         .select_sources(
             &session,
@@ -175,34 +172,35 @@ async fn stream_1() -> ashpd::Result<Arc<Mutex<OwnedFd>>> {
             source_types,
             false,
             None,
-            PersistMode::DoNot,
+            PersistMode::Application,
         )
         .await?;
+    println!("Sources selected.");
 
+    println!("Starting screencast...");
     let res = proxy.start(&session, None).await?.response()?;
+    println!("Screencast started with response: {:?}", res);
+
+    println!("Opening PipeWire remote...");
     let fd: OwnedFd = proxy.open_pipe_wire_remote(&session).await?;
+    let fd_arc = Arc::new(Mutex::new(fd));
+    println!("PipeWire remote opened, file descriptor: {:?}", fd_arc);
 
-    println!("Stream 1 started with response: {:?}", res);
-    println!("Stream 1 file descriptor: {:?}", fd);
-    Ok(Arc::new(Mutex::new(fd)))
-}
+    println!("Starting capture stream...");
+    if let Err(e) = capture_stream(fd_arc.clone(), &mut buffer).await {
+        eprintln!("Error capturing stream: {:?}", e);
+    }
+    println!("Capture stream finished.");
 
-async fn stream_2() -> Result<Arc<Mutex<OwnedFd>>, String> {
-    let portal = Portal::new().await.unwrap();
-    let mut screencast_portal = portal.screencast().await.unwrap();
-    let screencast_req = ScreencastReq::new().source_type(SourceType::Window | SourceType::Monitor);
-
-    let res = match screencast_portal.screencast(screencast_req).await {
-        Ok(res) => res,
-        Err(e) => {
-            eprintln!("Error: {:?}", e);
-            return Err("Failed to create screencast session".to_string());
+    if buffer.is_full() {
+        println!("Buffer is full, ready to dump to MP4");
+        let raw_data = buffer.dump();
+        if let Err(e) = dump_to_mp4(raw_data, "output.mp4") {
+            eprintln!("Error dumping data to MP4: {:?}", e);
         }
-    };
+    } else {
+        println!("Buffer is not full yet");
+    }
 
-    println!("Stream 2 response: {:?}", res);
-    let fd = res.fd;
-    println!("Stream 2 file descriptor: {:?}", fd);
-
-    Ok(Arc::new(Mutex::new(fd)))
+    Ok(())
 }

@@ -5425,6 +5425,7 @@ dependencies = [
  "device_query",
  "enumflags2",
  "ffmpeg-next",
+ "libc",
  "pipewire",
  "pipewire-sys",
  "portal-screencast",
