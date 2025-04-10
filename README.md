@@ -1,3 +1,5 @@
+<img alt="Coding Time For Wayclip" src="https://wakapi.dev/api/badge/konyogony/interval:any/project:wayclip">
+
 # Prerequisites
 
 im not even sure atp
