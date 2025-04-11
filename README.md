@@ -2,8 +2,8 @@
 
 # Prerequisites
 
-gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav
-im not even sure atp
+- [Wayland](https://wayland.freedesktop.org/), works _only_ on Wayland
+- [xdg-desktop-portal-hyprland](https://archlinux.org/packages/?name=xdg-desktop-portal-hyprland), you can use any xdg-desktop-portal, make sure it allows for screencast and input capture. You check them [here](https://wiki.archlinux.org/title/XDG_Desktop_Portal)
 
 # Roadmap
 
