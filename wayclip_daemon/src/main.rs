@@ -1,206 +1,171 @@
-use ashpd::desktop::screencast::{CursorMode, Screencast, SourceType as SourceTypeA};
-use ashpd::desktop::PersistMode;
-use enumflags2::BitFlags;
+use ashpd::desktop::screencast::{CursorMode, Screencast, SourceType};
+use ashpd::desktop::{PersistMode, Session};
+use ashpd::WindowIdentifier;
+use enumflags2::BitFlag;
+use gstreamer as gst;
+use gstreamer::glib::object::Cast;
+use gstreamer::prelude::{ElementExt, GstBinExt};
+use gstreamer_app::AppSink;
 use std::collections::VecDeque;
-use std::fs::File;
-use std::io::ErrorKind;
-use std::os::fd::FromRawFd;
-use std::os::unix::io::{AsRawFd, OwnedFd};
 use std::sync::{Arc, Mutex};
-use tokio::io::AsyncReadExt;
-use tokio::main;
-use tokio::time::{sleep, Duration, Instant};
+use std::{fs::File, os::unix::io::AsRawFd, process::Command};
+use tokio::time::Duration;
 
-struct CircularBuffer {
-    buffer: VecDeque<u8>,
-    max_size: usize,
+struct RingBuffer {
+    buffer: VecDeque<Vec<u8>>,
+    capacity: usize,
 }
 
-impl CircularBuffer {
-    fn new(max_size: usize) -> Self {
-        CircularBuffer {
-            buffer: VecDeque::with_capacity(max_size),
-            max_size,
+impl RingBuffer {
+    fn new(capacity: usize) -> Self {
+        println!("[ring] init w/ cap {}", capacity);
+        Self {
+            buffer: VecDeque::with_capacity(capacity),
+            capacity,
         }
     }
 
-    fn push(&mut self, data: &[u8]) {
-        for &byte in data.iter() {
-            if self.buffer.len() == self.max_size {
-                self.buffer.pop_front();
-            }
-            self.buffer.push_back(byte);
+    fn push(&mut self, data: Vec<u8>) {
+        if self.buffer.len() == self.capacity {
+            println!("[ring] cap hit, pop oldest");
+            self.buffer.pop_front();
+        }
+        println!("[ring] push frame: {} bytes", data.len());
+        self.buffer.push_back(data);
+    }
+
+    fn dump_to_file(&self, path: &str) {
+        println!("[ring] dumping {} frames to {}", self.buffer.len(), path);
+        let mut file = File::create(path).expect("[ring] failed to create file");
+        for (i, chunk) in self.buffer.iter().enumerate() {
+            println!("[ring] write chunk {} size {}", i, chunk.len());
+            std::io::Write::write_all(&mut file, chunk).expect("[ring] write fail");
         }
     }
-
-    fn len(&self) -> usize {
-        self.buffer.len()
-    }
-
-    fn is_full(&self) -> bool {
-        self.buffer.len() == self.max_size
-    }
-
-    fn dump(&self) -> Vec<u8> {
-        self.buffer.iter().cloned().collect()
-    }
-}
-
-async fn capture_stream(
-    fd: Arc<Mutex<OwnedFd>>,
-    buffer: &mut CircularBuffer,
-) -> std::io::Result<()> {
-    println!("Starting capture_stream");
-
-    let stream_fd = {
-        let fd_lock = fd.lock().unwrap();
-        let raw_fd = fd_lock.as_raw_fd();
-
-        let duped_fd = unsafe { libc::dup(raw_fd) };
-        if duped_fd < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        duped_fd
-    };
-
-    let stream = unsafe { File::from_raw_fd(stream_fd) };
-    println!("Stream started with file descriptor: {:?}", stream);
-
-    let mut async_stream = tokio::fs::File::from(stream);
-    let mut temp_buffer = [0u8; 576];
-    let mut last_read_time = Instant::now();
-    let timeout_duration = Duration::from_secs(5);
-    let mut retry_delay = Duration::from_millis(10); // Initial delay
-
-    loop {
-        let read_result = async_stream.read(&mut temp_buffer).await;
-
-        match read_result {
-            Ok(bytes_read) => {
-                if bytes_read == 0 {
-                    println!("No more data to read, ending stream capture.");
-                    break;
-                }
-
-                println!("Read {} bytes from stream", bytes_read);
-                buffer.push(&temp_buffer[..bytes_read]);
-                last_read_time = Instant::now();
-
-                // Reset retry delay on successful read
-                retry_delay = Duration::from_millis(10);
-
-                if buffer.is_full() {
-                    println!("Buffer is full, ready to dump to disk");
-                    break;
-                }
-            }
-            Err(e) => {
-                if e.kind() == ErrorKind::WouldBlock {
-                    let elapsed = last_read_time.elapsed();
-                    if elapsed > timeout_duration {
-                        println!("Timeout: No data for {:?}, stopping capture", elapsed);
-                        break;
-                    }
-
-                    println!("WouldBlock error, retrying after {:?}", retry_delay);
-                    tokio::time::sleep(retry_delay).await;
-
-                    // Increase retry delay, but with a maximum
-                    retry_delay = (retry_delay * 2).min(Duration::from_millis(500));
-                    continue;
-                } else {
-                    eprintln!("Error reading from stream: {:?}", e);
-                    break;
-                }
-            }
-        }
-    }
-
-    println!("Capture stream ended, buffer size: {}", buffer.len());
-    Ok(())
-}
-
-fn dump_to_mp4(raw_data: Vec<u8>, output_filename: &str) -> Result<(), String> {
-    let temp_raw_path = "temp_raw_data.raw";
-    std::fs::write(temp_raw_path, raw_data)
-        .map_err(|e| format!("Failed to write raw data: {}", e))?;
-
-    let command = std::process::Command::new("ffmpeg")
-        .args(&[
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "yuv420p",
-            "-s",
-            "2560x1440",
-            "-r",
-            "60",
-            "-i",
-            temp_raw_path,
-            "-c:v",
-            "libx264",
-            "-y",
-            output_filename,
-        ])
-        .output()
-        .map_err(|e| format!("Failed to execute ffmpeg: {}", e))?;
-
-    if !command.status.success() {
-        eprintln!(
-            "ffmpeg stderr: {:?}",
-            String::from_utf8_lossy(&command.stderr)
-        );
-        return Err(format!("ffmpeg failed: {:?}", command.status));
-    }
-
-    Ok(())
 }
 
 #[tokio::main]
-async fn main() -> ashpd::Result<()> {
-    let mut buffer = CircularBuffer::new(1024 * 1024 * 10);
+async fn main() {
+    println!("[init] starting...");
+    gst::init().expect("[gst] init fail");
 
-    let proxy = Screencast::new().await?;
-    let session = proxy.create_session().await?;
-    let source_types = BitFlags::<SourceTypeA>::from_flag(SourceTypeA::Monitor);
+    println!("[ashpd] creating screencast proxy");
+    let proxy = Screencast::new().await.expect("[ashpd] proxy fail");
 
-    println!("Selecting sources...");
+    println!("[ashpd] creating session");
+    let session = proxy.create_session().await.expect("[ashpd] session fail");
+
+    println!("[ashpd] selecting sources...");
     proxy
         .select_sources(
             &session,
-            CursorMode::Embedded,
-            source_types,
+            CursorMode::Hidden,
+            BitFlag::empty(),
             false,
             None,
             PersistMode::Application,
         )
-        .await?;
-    println!("Sources selected.");
+        .await
+        .expect("[ashpd] select_sources fail");
 
-    println!("Starting screencast...");
-    let res = proxy.start(&session, None).await?.response()?;
-    println!("Screencast started with response: {:?}", res);
+    println!("[ashpd] starting session...");
+    let response = proxy
+        .start(&session, None)
+        .await
+        .expect("[ashpd] start fail")
+        .response()
+        .expect("[ashpd] response fail");
 
-    println!("Opening PipeWire remote...");
-    let fd: OwnedFd = proxy.open_pipe_wire_remote(&session).await?;
-    let fd_arc = Arc::new(Mutex::new(fd));
-    println!("PipeWire remote opened, file descriptor: {:?}", fd_arc);
+    println!("[ashpd] got {} streams", response.streams().len());
+    let pipewire_fd = proxy
+        .open_pipe_wire_remote(&session)
+        .await
+        .expect("[ashpd] open_pipe_wire_remote fail");
+    println!(
+        "[ashpd] got pipewire file descriptor: {:?}",
+        pipewire_fd.as_raw_fd()
+    );
 
-    println!("Starting capture stream...");
-    if let Err(e) = capture_stream(fd_arc.clone(), &mut buffer).await {
-        eprintln!("Error capturing stream: {:?}", e);
+    let ring_buffer = Arc::new(Mutex::new(RingBuffer::new(256)));
+
+    let pipeline_str = format!(
+        "pipewiresrc fd={} ! videoconvert ! video/x-raw,format=I420 ! appsink name=sink",
+        pipewire_fd.as_raw_fd()
+    );
+    println!("[gst] pipeline str:\n{}", pipeline_str);
+
+    println!("[gst] parsing pipeline");
+    let pipeline = gst::parse::launch(&pipeline_str).expect("[gst] failed to parse pipeline");
+
+    println!("[gst] getting appsink element");
+    let appsink = pipeline
+        .clone()
+        .dynamic_cast::<gst::Bin>()
+        .expect("[gst] cast to bin failed")
+        .by_name("sink")
+        .expect("[gst] couldn't find sink")
+        .dynamic_cast::<AppSink>()
+        .expect("[gst] cast to AppSink failed");
+
+    let rb_clone = ring_buffer.clone();
+    appsink.set_callbacks(
+        gstreamer_app::AppSinkCallbacks::builder()
+            .new_sample(move |sink| {
+                let sample = sink.pull_sample().expect("[gst] failed to pull sample");
+                let buffer = sample.buffer().expect("[gst] no buffer in sample");
+                let map = buffer.map_readable().expect("[gst] failed to map buffer");
+                let data = map.as_slice().to_vec();
+
+                println!("[gst] got sample, size: {}", data.len());
+                if let Ok(mut rb) = rb_clone.lock() {
+                    rb.push(data);
+                } else {
+                    println!("[ring] failed to lock");
+                }
+
+                Ok(gst::FlowSuccess::Ok)
+            })
+            .build(),
+    );
+
+    println!("[gst] setting pipeline to playing");
+    pipeline
+        .set_state(gst::State::Playing)
+        .expect("[gst] failed to play");
+
+    println!("[rec] waiting 10 secs");
+    tokio::time::sleep(Duration::from_secs(10)).await;
+
+    println!("[gst] stopping pipeline");
+    pipeline
+        .set_state(gst::State::Null)
+        .expect("[gst] failed to stop");
+
+    println!("[file] dumping raw.yuv");
+    {
+        let rb = ring_buffer.lock().expect("[ring] lock fail for dump");
+        rb.dump_to_file("raw.yuv");
     }
-    println!("Capture stream finished.");
 
-    if buffer.is_full() {
-        println!("Buffer is full, ready to dump to MP4");
-        let raw_data = buffer.dump();
-        if let Err(e) = dump_to_mp4(raw_data, "output.mp4") {
-            eprintln!("Error dumping data to MP4: {:?}", e);
-        }
-    } else {
-        println!("Buffer is not full yet");
-    }
+    println!("[ffmpeg] converting raw.yuv to output.mp4");
+    let status = Command::new("ffmpeg")
+        .args([
+            "-f",
+            "rawvideo",
+            "-pixel_format",
+            "yuv420p",
+            "-video_size",
+            "2560x1440", // adjust based on ur screen
+            "-framerate",
+            "30",
+            "-i",
+            "raw.yuv",
+            "output.mp4",
+        ])
+        .status()
+        .expect("[ffmpeg] failed to run");
 
-    Ok(())
+    println!("[ffmpeg] finished with status: {}", status);
+
+    println!("[done] check output.mp4");
 }

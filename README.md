@@ -2,6 +2,7 @@
 
 # Prerequisites
 
+gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav
 im not even sure atp
 
 # Roadmap
