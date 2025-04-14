@@ -8,11 +8,15 @@ use gstreamer as gst;
 use gstreamer::glib::object::Cast;
 use gstreamer::prelude::{ElementExt, GstBinExt};
 use gstreamer_app::AppSink;
+use libc::listen;
 use std::collections::VecDeque;
 use std::io::Write;
+use std::io::{BufRead, BufReader};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::{fs::File, os::unix::io::AsRawFd, process::Command};
+use tokio::io::AsyncReadExt;
+use tokio::net::UnixListener;
 use tokio::time::Duration;
 
 struct RingBuffer {
@@ -39,10 +43,50 @@ impl RingBuffer {
     }
 }
 
+// Works only for hyprland, launches rust process to send data via unix socket
+async fn setup_bind_hyprland() {
+    let output = Command::new("hyprctl")
+        .args([
+            "keyword",
+            "bind",
+            "Alt_L,C,exec,/usr/local/bin/wayclip_trigger",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("[hypr] failed to add bind")
+        .wait();
+    if let Ok(output) = output {
+        // Check if the output is "ok"
+        if output.success() {
+            println!("[hypr] bind added successfully");
+        } else {
+            println!("[hypr] failed to add bind");
+            println!("[hypr] error: {}", output.to_string());
+        }
+    } else {
+        println!("[hypr] failed to add bind");
+    }
+}
+
 #[tokio::main]
 async fn main() {
+    // --- INIT ---
+
     println!("[init] starting...");
     gst::init().expect("[gst] init fail");
+
+    println!("[unix] starting unix listener");
+    let listener = UnixListener::bind("/tmp/wayclip.sock").expect("[unix] unix listener fail");
+
+    // Check if using hyprland
+    if std::env::var("DESKTOP_SESSION") == Ok("hyprland".to_string()) {
+        println!("[init] using hyprland");
+        setup_bind_hyprland().await;
+    } else {
+        println!("[init] not using hyprland");
+        println!("[init] please bind LAlt + C to /usr/local/bin/wayclip_trigger");
+    }
 
     // --- SCREENCAST ---
 
@@ -93,28 +137,10 @@ async fn main() {
         pipewire_fd.as_raw_fd()
     );
 
-    // --- INPUT CAPTURE ---
-
-    println!("[ashpd] creating a new input capture session");
-    let input_capture = ashpd::desktop::input_capture::InputCapture::new()
-        .await
-        .expect("[ashpd] input capture creation fail");
-    let (capture_session, capabilities) = input_capture
-        .create_session(None, enumflags2::BitFlags::from(Capabilities::Keyboard))
-        .await
-        .expect("[ashpd] create_session input capture fail");
-    eprintln!("capabilities: {capabilities}");
-
-    let eifd = input_capture
-        .connect_to_eis(&capture_session)
-        .await
-        .expect("[ashpd] connect_to_eis fail");
-    eprintln!("eifd: {}", eifd.as_raw_fd());
-
     // --- GSTREAMER ---
 
     println!("[ashpd] creating a new ring buffer");
-    let ring_buffer = Arc::new(Mutex::new(RingBuffer::new(512))); // 256 frames
+    let ring_buffer = Arc::new(Mutex::new(RingBuffer::new(512))); // 512 frames
 
     let pipeline_str = format!(
         "pipewiresrc fd={} ! videoconvert ! video/x-raw,format=I420 ! appsink name=sink",
@@ -164,16 +190,22 @@ async fn main() {
         .set_state(gst::State::Playing)
         .expect("[gst] failed to play");
 
-    let device_state = DeviceState::new();
-    println!("[rec] press LAlt + C to stop recording");
-
     loop {
-        let keys = device_state.get_keys();
-        if keys.contains(&Keycode::LAlt) && keys.contains(&Keycode::C) {
-            println!("[rec] hotkey pressed, stopping...");
+        let (mut stream, _) = listener.accept().await.expect("[unix] unix accept fail");
+        let mut buf = [0u8; 64]; // enough to read small msgs
+        let n = stream.read(&mut buf).await.expect("[unix] read fail");
+
+        if n == 0 {
+            continue;
+        }
+
+        let msg = std::str::from_utf8(&buf[..n]).unwrap_or("").trim();
+        println!("got msg: {}", msg);
+
+        if msg == "save" {
+            println!("saving clip");
             break;
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
     println!("[gst] stopping pipeline");
@@ -215,6 +247,9 @@ async fn main() {
 
     let status = ffmpeg.wait().expect("[ffmpeg] wait fail");
     println!("[ffmpeg] exited with status: {}", status);
+
+    println!("[unix] deleting unix socket");
+    std::fs::remove_file("/tmp/clip.sock").ok();
 
     println!("[done] check output.mp4");
 }

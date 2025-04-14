@@ -5870,6 +5870,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "wayclip_trigger"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+]
+
+[[package]]
 name = "wayland-backend"
 version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
