@@ -13,6 +13,8 @@ use tokio::io::AsyncReadExt;
 use tokio::net::UnixListener;
 use tokio::time::{sleep_until, Duration, Instant};
 
+const FRAMES: usize = 3584;
+
 const PREFIX_INIT: &str = "\x1b[35m[init]\x1b[0m"; // magenta
 const PREFIX_UNIX: &str = "\x1b[36m[unix]\x1b[0m"; // cyan
 const PREFIX_ASH: &str = "\x1b[34m[ashpd]\x1b[0m"; // blue
@@ -156,7 +158,7 @@ async fn main() {
     // --- GSTREAMER ---
 
     println!("{} creating a new ring buffer", PREFIX_RING);
-    let ring_buffer = Arc::new(Mutex::new(RingBuffer::new(512))); // 512 frames
+    let ring_buffer = Arc::new(Mutex::new(RingBuffer::new(FRAMES))); // 512 frames
 
     let pipeline_str = format!(
         "pipewiresrc fd={} ! videoconvert ! video/x-raw,format=I420 ! appsink name=sink",
