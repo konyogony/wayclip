@@ -1,22 +1,27 @@
-<img alt="Coding Time For Wayclip" src="https://wakapi.dev/api/badge/konyogony/interval:any/project:wayclip">
+<div align="center">
+
+    <h1>Wayclip</h1>
+
+    <img alt="Coding Time For Wayclip" src="https://wakapi.dev/api/badge/konyogony/interval:any/project:wayclip" />
+    <img alt="MIT License" src="https://img.shields.io/badge/license-MIT-blue.svg" />
+
+</div>
 
 # Prerequisites
 
-- [Wayland](https://wayland.freedesktop.org/), works _only_ on Wayland
-- [xdg-desktop-portal-hyprland](https://archlinux.org/packages/?name=xdg-desktop-portal-hyprland), you can use any xdg-desktop-portal, make sure it allows for screencast and input capture. You check them [here](https://wiki.archlinux.org/title/XDG_Desktop_Portal)
+- [Wayland](https://wayland.freedesktop.org/), works _so far only_ on Wayland. I may add more support for X11 in the future.
+- [xdg-desktop-portal-hyprland](https://archlinux.org/packages/?name=xdg-desktop-portal-hyprland), you can use any xdg-desktop-portal, make sure it allows for screencast. You check them [here](https://wiki.archlinux.org/title/XDG_Desktop_Portal)
 
 # Roadmap
 
-1. dbus connection to xdg-desktop-portal
-2. request to capture screen
-3. pipe screenshare to ffmpeg as rawvideo
-4. ffmpeg uses segment_format and segment_wrap to have a circular buffer of a set size, somehow do it in ram?
-5. detect keybaord shortcut and save ffmpeg file permamently in set location
-6. restart ffmpeg buffer
-
 - [ ] Background proccess (daemon)
 
-  - [x] Pull settings from `.config/wayclip/settings.conf`
+  - [ ] Record the Background
+  - [ ] Place frames in a circular buffer
+  - [ ] Listen for keyboard shortcuts
+  - [ ] Dump the buffer to a file
+  - [ ] Start a new buffer
+  - [x] Pull settings from `.config/wayclip/settings.json`
 
 - [ ] GUI using tauri
   - [x] Settup tauri and vite environment
@@ -24,6 +29,8 @@
   - [ ] Show all saved clips
   - [ ] Rename, delete, play, cut clips
   - [ ] Upload / Share clips
+  - [ ] Notifications
+  - [ ] Start / Stop, save recording
   - [x] Settings
     - [x] Clip name formatting
     - [x] Video format (or maybe enforce only mp4)
