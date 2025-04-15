@@ -1,10 +1,7 @@
 <div align="center">
-
     <h1>Wayclip</h1>
-
     <img alt="Coding Time For Wayclip" src="https://wakapi.dev/api/badge/konyogony/interval:any/project:wayclip" />
     <img alt="MIT License" src="https://img.shields.io/badge/license-MIT-blue.svg" />
-
 </div>
 
 # Prerequisites
