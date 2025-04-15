@@ -9,5 +9,5 @@ pub fn run() {
             commands::pull_settings
         ])
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .expect(err!([TAURI] => "failed to run tauri"));
 }

@@ -5,6 +5,29 @@ use std::collections::HashMap;
 use std::fs::{create_dir_all, read_to_string, write};
 use std::path::PathBuf;
 
+pub const INIT: &str = "\x1b[35m[init]\x1b[0m"; // magenta
+pub const UNIX: &str = "\x1b[36m[unix]\x1b[0m"; // cyan
+pub const ASH: &str = "\x1b[34m[ashpd]\x1b[0m"; // blue
+pub const GST: &str = "\x1b[32m[gst]\x1b[0m"; // green
+pub const RING: &str = "\x1b[33m[ring]\x1b[0m"; // yellow
+pub const HYPR: &str = "\x1b[31m[hypr]\x1b[0m"; // red
+pub const FFMPEG: &str = "\x1b[95m[ffmpeg]\x1b[0m"; // pink
+pub const TAURI: &str = "\x1b[90m[tauri]\x1b[0m"; // gray
+
+#[macro_export]
+macro_rules! log {
+    ([ $tag:ident ] => $($arg:tt)*) => {
+        println!("{} {}", $crate::$tag, format!($($arg)*));
+    };
+}
+
+#[macro_export]
+macro_rules! err {
+    ([ $tag:ident ] => $($arg:tt)*) => {
+        format!("{} {}", $crate::$tag, format!($($arg)*)).as_str()
+    };
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(untagged)]
 pub enum JsonValue {

@@ -1,27 +1,25 @@
 use ashpd::desktop::screencast::{CursorMode, Screencast, SourceType};
 use ashpd::desktop::PersistMode;
 use gstreamer as gst;
-use gstreamer::glib::object::Cast;
+use gstreamer::prelude::Cast;
 use gstreamer::prelude::{ElementExt, GstBinExt};
 use gstreamer_app::AppSink;
 use std::collections::VecDeque;
 use std::io::Write;
+use std::os::unix::io::AsRawFd;
+use std::process::Command;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-use std::{os::unix::io::AsRawFd, process::Command};
 use tokio::io::AsyncReadExt;
 use tokio::net::UnixListener;
+use tokio::sync::mpsc;
+use tokio::sync::mpsc::{channel, Receiver, Sender};
+use tokio::sync::Semaphore;
 use tokio::time::{sleep_until, Duration, Instant};
+use wayclip_shared::{err, log};
 
 const FRAMES: usize = 3584;
-
-const PREFIX_INIT: &str = "\x1b[35m[init]\x1b[0m"; // magenta
-const PREFIX_UNIX: &str = "\x1b[36m[unix]\x1b[0m"; // cyan
-const PREFIX_ASH: &str = "\x1b[34m[ashpd]\x1b[0m"; // blue
-const PREFIX_GST: &str = "\x1b[32m[gst]\x1b[0m"; // green
-const PREFIX_RING: &str = "\x1b[33m[ring]\x1b[0m"; // yellow
-const PREFIX_HYPR: &str = "\x1b[31m[hypr]\x1b[0m"; // red
-const PREFIX_FFMPEG: &str = "\x1b[95m[ffmpeg]\x1b[0m"; // white
+const MAX_FFMPEG_PROCESS: usize = 2;
 
 type Frame = (Vec<u8>, u64);
 
@@ -32,7 +30,7 @@ struct RingBuffer {
 
 impl RingBuffer {
     fn new(capacity: usize) -> Self {
-        println!("{} init w/ cap {}", PREFIX_RING, capacity);
+        log!([RING] => "init w/ cap {}", capacity);
         Self {
             buffer: VecDeque::with_capacity(capacity),
             capacity,
@@ -41,251 +39,279 @@ impl RingBuffer {
 
     fn push(&mut self, data: Vec<u8>, pts: u64) {
         if self.buffer.len() == self.capacity {
-            println!("{} cap hit, pop oldest", PREFIX_RING);
+            log!([RING] => "buffer full, popping oldest");
             self.buffer.pop_front();
         }
-        println!("{} push frame: {} bytes", PREFIX_RING, data.len());
-        self.buffer.push_back((data, pts));
+        log!([RING] => "push frame: {} bytes", data.len());
+        self.buffer.push_back((data.to_vec(), pts));
     }
 
-    fn iter(&self) -> impl Iterator<Item = &Frame> {
-        self.buffer.iter()
+    fn get_and_clear(&mut self) -> Vec<Frame> {
+        let data: Vec<Frame> = self.buffer.drain(..).collect(); // get all data and clear buffer
+        log!([RING] => "get_and_clear, returning {} frames", data.len());
+        data
     }
 }
 
-// Works only for hyprland, launches rust process to send data via unix socket
-async fn setup_bind_hyprland() {
+async fn setup_hyprland() {
     let output = Command::new("hyprctl")
         .args([
             "keyword",
             "bind",
             "Alt_L,C,exec,/home/kony/Documents/GitHub/wayclip/target/debug/wayclip_trigger",
-            // Temporary path
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .expect(format!("{} failed to add bind", PREFIX_HYPR).as_str())
+        .expect(err!([HYPR] => "failed to spawn hyprctl"))
         .wait();
+
     if let Ok(output) = output {
-        // Check if the output is "ok"
         if output.success() {
-            println!("{} bind added successfully", PREFIX_HYPR);
+            log!([HYPR] => "bind added successfully");
         } else {
-            println!("{} failed to add bind", PREFIX_HYPR);
-            println!("{} error: {}", PREFIX_HYPR, output.to_string());
+            log!([HYPR] => "bind failed");
+            log!([HYPR] => "error: {}", output.to_string());
         }
     } else {
-        println!("{} failed to add bind", PREFIX_HYPR);
+        log!([HYPR] => "failed to add bind hyprctl");
     }
 }
 
 #[tokio::main]
 async fn main() {
-    // --- INIT ---
+    log!([INIT] => "starting...");
+    gst::init().expect(err!([INIT] => "failed to init gstreamer"));
 
-    println!("{} starting...", PREFIX_INIT);
-    gst::init().expect(format!("{} gst init fail", PREFIX_GST).as_str());
-
-    println!("{} starting unix listener", PREFIX_UNIX);
+    log!([UNIX] => "starting unix listener");
     let listener = UnixListener::bind("/tmp/wayclip.sock")
-        .expect(format!("{} unix listener fail", PREFIX_UNIX).as_str());
+        .expect(err!([UNIX] => "failed to bind unix socket (hint: try `rm /tmp/wayclip.sock`)"));
 
-    // Check if using hyprland
     if std::env::var("DESKTOP_SESSION") == Ok("hyprland".to_string()) {
-        println!("{} using hyprland", PREFIX_HYPR);
-        setup_bind_hyprland().await;
+        log!([HYPR] => "using hyprland");
+        setup_hyprland().await;
     } else {
-        println!("{} not using hyprland", PREFIX_HYPR);
-        println!(
-            "{} please bind LAlt + C to /usr/local/bin/wayclip_trigger",
-            PREFIX_HYPR
-        );
-        // Or some other path
+        log!([HYPR] => "not using hyprland");
+        log!([HYPR] => "please bind LAlt + C to /home/kony/Documents/GitHub/wayclip/target/debug/wayclip_trigger");
     }
 
-    // --- SCREENCAST ---
-
-    println!("{} creating screencast proxy", PREFIX_ASH);
+    log!([ASH] => "creating screencast proxy");
     let proxy = Screencast::new()
         .await
-        .expect(format!("{} screencast proxy creation fail", PREFIX_ASH).as_str());
-
-    println!("{} creating screencast session", PREFIX_ASH);
+        .expect(err!([ASH] => "failed to create screencast proxy"));
+    log!([ASH] => "creating screencast session");
     let session = proxy
         .create_session()
         .await
-        .expect(format!("{} creating screencast session fail", PREFIX_ASH).as_str());
-
-    println!("{} selecting sources for screencast...", PREFIX_ASH);
+        .expect(err!([ASH] => "failed to create screencast session"));
+    log!([ASH] => "selecting sources for screencast");
     proxy
         .select_sources(
             &session,
-            CursorMode::Hidden, // Doesnt matter what you set it, still will see cursor
-            enumflags2::BitFlags::from(SourceType::Monitor), // Seems like a useless property to me
+            CursorMode::Hidden,
+            enumflags2::BitFlags::from(SourceType::Monitor),
             false,
             None,
-            // Since this is a cli, i cant really get the window id
-            // meaning i dont have an identifier
             PersistMode::Application,
         )
         .await
-        .expect(format!("{} select_sources for screencast fail", PREFIX_ASH).as_str());
-
-    println!("{} starting screencast session...", PREFIX_ASH);
+        .expect(err!([ASH] => "failed to select sources"));
+    log!([ASH] => "starting screencast session");
     let response = proxy
         .start(&session, None)
         .await
-        .expect(format!("{} starting screencast session fail", PREFIX_ASH).as_str())
+        .expect(err!([ASH] => "failed to start screencast session"))
         .response()
-        .expect(format!("{} grabbing response fail", PREFIX_ASH).as_str());
-
-    println!(
-        "{} got {} streams, opening pipewire remote",
-        PREFIX_ASH,
-        response.streams().len()
-    );
+        .expect(err!([ASH] => "failed to get screencast response"));
+    log!([ASH] => "streams: {:?}", response.streams());
     let pipewire_fd = proxy
         .open_pipe_wire_remote(&session)
         .await
-        .expect(format!("{} open_pipe_wire_remote fail", PREFIX_ASH).as_str());
-    println!(
-        "{} got pipewire file descriptor: {:?}",
-        PREFIX_ASH,
-        pipewire_fd.as_raw_fd()
-    );
+        .expect(err!([ASH] => "failed to open pipewire remote"));
+    log!([ASH] => "pipewire fd: {:?}", pipewire_fd.as_raw_fd());
 
-    // --- GSTREAMER ---
-
-    println!("{} creating a new ring buffer", PREFIX_RING);
-    let ring_buffer = Arc::new(Mutex::new(RingBuffer::new(FRAMES))); // 512 frames
+    let ring_buffer = Arc::new(Mutex::new(RingBuffer::new(FRAMES)));
+    let ffmpeg_semaphore = Arc::new(Semaphore::new(MAX_FFMPEG_PROCESS));
 
     let pipeline_str = format!(
         "pipewiresrc fd={} ! videoconvert ! video/x-raw,format=I420 ! appsink name=sink",
         pipewire_fd.as_raw_fd()
     );
-    println!("{} pipeline str:\n{}", PREFIX_GST, pipeline_str);
+    log!([GST] => "parsing pipeline: {}", pipeline_str);
+    let pipeline =
+        gst::parse::launch(&pipeline_str).expect(err!([GST] => "failed to parse pipeline"));
 
-    println!("{} parsing pipeline", PREFIX_GST);
-    let pipeline = gst::parse::launch(&pipeline_str)
-        .expect(format!("{} failed to parse pipeline", PREFIX_GST).as_str());
-
-    // Some magic going on here
-    println!("{} getting appsink element", PREFIX_GST);
+    log!([GST] => "getting appsink element");
     let appsink = pipeline
         .clone()
         .dynamic_cast::<gst::Bin>()
-        .expect(format!("{} cast to bin failed", PREFIX_GST).as_str())
+        .expect(err!([GST] => "failed to cast pipeline to bin"))
         .by_name("sink")
-        .expect(format!("{} couldn't find sink", PREFIX_GST).as_str())
+        .expect(err!([GST] => "failed to get appsink"))
         .dynamic_cast::<AppSink>()
-        .expect(format!("{} cast to AppSink failed", PREFIX_GST).as_str());
+        .expect(err!([GST] => "failed to cast to appsink"));
 
     let rb_clone = ring_buffer.clone();
-
-    println!("{} setting appsink callbacks", PREFIX_GST);
+    log!([GST] => "setting appsink callbacks for constant recording");
     appsink.set_callbacks(
         gstreamer_app::AppSinkCallbacks::builder()
             .new_sample(move |sink| {
                 let sample = sink
                     .pull_sample()
-                    .expect(format!("{} failed to pull sample", PREFIX_GST).as_str());
+                    .expect(err!([GST] => "failed to pull sample"));
                 let buffer = sample
                     .buffer()
-                    .expect(format!("{} no buffer in sample", PREFIX_GST).as_str());
+                    .expect(err!([GST] => "failed to get buffer"));
                 let map = buffer
                     .map_readable()
-                    .expect(format!("{} failed to map buffer", PREFIX_GST).as_str());
+                    .expect(err!([GST] => "failed to map buffer"));
                 let data = map.as_slice().to_vec();
-                let pts = buffer.pts().unwrap().nseconds() / 1000; // convert to microseconds
+                let pts = buffer.pts().unwrap().nseconds() / 1000;
 
-                println!("{} got sample, size: {}", PREFIX_GST, data.len());
+                log!([GST] => "got sample, size: {}, pts: {}", data.len(), pts);
                 if let Ok(mut rb) = rb_clone.lock() {
                     rb.push(data, pts);
                 } else {
-                    println!("{} failed to lock", PREFIX_RING);
+                    log!([RING] => "failed to lock ring buffer");
                 }
-
                 Ok(gst::FlowSuccess::Ok)
             })
             .build(),
     );
 
-    println!("{} setting pipeline to playing", PREFIX_GST);
-    pipeline
-        .set_state(gst::State::Playing)
-        .expect(format!("{} failed to play", PREFIX_GST).as_str());
-
-    loop {
-        let (mut stream, _) = listener
-            .accept()
-            .await
-            .expect(format!("{} unix accept fail", PREFIX_UNIX).as_str());
-        let mut buf = [0u8; 64]; // enough to read small msgs
-        let n = stream
-            .read(&mut buf)
-            .await
-            .expect(format!("{} read fail", PREFIX_UNIX).as_str());
-
-        if n == 0 {
-            continue;
-        }
-
-        let msg = std::str::from_utf8(&buf[..n]).unwrap_or("").trim();
-        println!("{} got msg: {}", PREFIX_UNIX, msg);
-
-        if msg == "save" {
-            println!("{} saving clip", PREFIX_UNIX);
-            break;
-        }
+    log!([GST] => "setting pipeline to playing for constant recording");
+    if let Err(err) = pipeline.set_state(gst::State::Playing) {
+        eprintln!(
+            "{}: {:?}",
+            err!([GST] => "failed to set pipeline to playing"),
+            err
+        );
+        pipeline
+            .set_state(gst::State::Null)
+            .expect(err!([GST] => "failed to set pipeline to null after error"));
+        std::process::exit(1);
+    } else {
+        log!([GST] => "pipeline set to playing");
     }
 
-    println!("{} stopping pipeline", PREFIX_GST);
-    pipeline
-        .set_state(gst::State::Null)
-        .expect(format!("{} failed to stop", PREFIX_GST).as_str());
+    let (tx, mut rx): (Sender<String>, Receiver<String>) = channel(32);
 
-    println!("{} spawning ffmpeg to consume from pipe", PREFIX_FFMPEG);
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener
+                .accept()
+                .await
+                .expect(err!([UNIX] => "failed to accept unix socket"));
+            let mut buf = [0u8; 64];
+            let n = stream
+                .read(&mut buf)
+                .await
+                .expect(err!([UNIX] => "failed to read from unix socket"));
+            if n == 0 {
+                continue;
+            }
+            let msg = std::str::from_utf8(&buf[..n]).unwrap_or("").trim();
+            log!([UNIX] => "msg: {}", msg);
 
-    let mut ffmpeg = Command::new("ffmpeg")
-        .args([
-            "-y",
-            "-f",
-            "rawvideo",
-            "-pixel_format",
-            "yuv420p",
-            "-video_size",
-            "2560x1440",
-            "-framerate",
-            "30",
-            "-i",
-            "-",
-            "output.mp4",
-        ])
-        .stdin(Stdio::piped())
-        .spawn()
-        .expect(format!("{} ffmpeg spawn fail", PREFIX_FFMPEG).as_str());
+            tx.send(msg.to_string())
+                .await
+                .expect("Failed to send message to command queue");
+        }
+    });
 
-    let mut stdin = ffmpeg.stdin.take().unwrap();
-    let buffer = ring_buffer.lock().unwrap();
-    let first_pts = buffer.buffer.front().map(|(_, pts)| *pts).unwrap_or(0);
+    while let Some(msg) = rx.recv().await {
+        match msg.as_str() {
+            "save" => {
+                log!([UNIX] => "save command received, starting saving process");
 
-    let start = Instant::now();
-    for (frame, pts) in buffer.iter() {
-        let rel = *pts - first_pts;
-        let when = start + Duration::from_micros(rel);
-        sleep_until(when).await;
-        stdin
-            .write_all(frame)
-            .expect(format!("{} write fail", PREFIX_FFMPEG).as_str());
+                let permit = ffmpeg_semaphore.clone().acquire_owned().await.unwrap();
+
+                log!([GST] => "pausing pipeline for save");
+                pipeline
+                    .set_state(gst::State::Paused)
+                    .expect(err!([GST] => "failed to set pipeline to paused"));
+
+                let saved_frames: Vec<Frame>;
+                {
+                    let mut buffer = ring_buffer.lock().unwrap();
+                    saved_frames = buffer.get_and_clear();
+                }
+
+                tokio::spawn(async move {
+                    log!([FFMPEG] => "spawning ffmpeg to save clip");
+                    let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
+                    let mut ffmpeg = Command::new("ffmpeg")
+                        .args([
+                            "-y",
+                            "-f",
+                            "rawvideo",
+                            "-pixel_format",
+                            "yuv420p",
+                            "-video_size",
+                            "2560x1440",
+                            "-framerate",
+                            "30",
+                            "-i",
+                            "-",
+                            format!("output_{}.mp4", timestamp).as_str(),
+                        ])
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::null())
+                        .spawn()
+                        .expect(err!([FFMPEG] => "failed to spawn ffmpeg"));
+
+                    let mut stdin = ffmpeg
+                        .stdin
+                        .take()
+                        .expect(err!([FFMPEG] => "failed to get ffmpeg stdin"));
+                    let mut last_pts = 0;
+                    let start = Instant::now();
+
+                    for (frame, pts) in saved_frames {
+                        let rel = pts - last_pts;
+                        let when = start + Duration::from_micros(rel);
+                        sleep_until(when).await;
+                        stdin
+                            .write_all(&frame)
+                            .expect(err!([FFMPEG] => "failed to write to ffmpeg stdin"));
+                        last_pts = pts;
+                    }
+
+                    drop(stdin);
+                    ffmpeg
+                        .wait()
+                        .expect(err!([FFMPEG] => "failed to wait for ffmpeg"));
+                    log!([FFMPEG] => "ffmpeg done, check output file");
+                    drop(permit);
+                });
+
+                if let Err(err) = pipeline.set_state(gst::State::Playing) {
+                    eprintln!(
+                        "{}: {:?}",
+                        err!([GST] => "failed to set pipeline to playing"),
+                        err
+                    );
+                    pipeline
+                        .set_state(gst::State::Null)
+                        .expect(err!([GST] => "failed to set pipeline to null after error"));
+                    std::process::exit(1);
+                } else {
+                    log!([GST] => "pipeline resumed");
+                }
+            }
+            "exit" => {
+                log!([UNIX] => "exit command received, exiting cleanly");
+                if let Err(e) = std::fs::remove_file("/tmp/wayclip.sock") {
+                    eprintln!("Error removing socket file: {}", e);
+                }
+                if let Err(e) = pipeline.set_state(gst::State::Null) {
+                    eprintln!("Error setting pipeline to null: {:?}", e);
+                }
+                break;
+            }
+            _ => {
+                log!([UNIX] => "unknown msg: {}", msg);
+            }
+        }
     }
-
-    drop(stdin);
-    ffmpeg
-        .wait()
-        .expect(format!("{} ffmpeg wait fail", PREFIX_FFMPEG).as_str());
-
-    std::fs::remove_file("/tmp/wayclip.sock")
-        .expect(format!("{} failed to remove socket", PREFIX_INIT).as_str());
-    println!("done: check output.mp4");
 }

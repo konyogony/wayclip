@@ -2,8 +2,8 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import Layout from '@/layouts/main-layout';
 import { BrowserRouter, Routes, Route } from 'react-router';
-import '@/styles/globals.css';
 import { routes } from '@/lib/routes';
+import '@/styles/globals.css';
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
     <React.StrictMode>

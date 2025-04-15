@@ -1,2 +1,8 @@
 [workspace]
-members = ["wayclip_shared", "wayclip_gui/src-tauri", "wayclip_daemon", "wayclip_trigger"]
+members = [
+  "wayclip_shared",
+  "wayclip_gui/src-tauri",
+  "wayclip_daemon",
+  "wayclip_trigger",
+]
+resolver = "3"
