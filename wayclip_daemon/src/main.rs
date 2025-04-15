@@ -1,30 +1,35 @@
-use ashpd::desktop::screencast::{CursorMode, Screencast, SourceType};
-use ashpd::desktop::PersistMode;
+use ashpd::desktop::{
+    screencast::{CursorMode, Screencast, SourceType},
+    PersistMode,
+};
+use gst::prelude::{Cast, ElementExt, GstBinExt};
 use gstreamer as gst;
-use gstreamer::prelude::Cast;
-use gstreamer::prelude::{ElementExt, GstBinExt};
 use gstreamer_app::AppSink;
 use std::collections::VecDeque;
+use std::fs::{metadata, remove_file};
 use std::io::Write;
 use std::os::unix::io::AsRawFd;
-use std::process::Command;
-use std::process::Stdio;
+use std::process::{exit, Command, Stdio};
 use std::sync::{Arc, Mutex};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::UnixListener;
-use tokio::sync::mpsc;
-use tokio::sync::mpsc::{channel, Receiver, Sender};
-use tokio::sync::Semaphore;
+use tokio::sync::{
+    mpsc::{channel, Receiver, Sender},
+    Semaphore,
+};
 use tokio::time::{sleep_until, Duration, Instant};
 use wayclip_shared::{err, log};
 
 const FRAMES: usize = 3584;
+const SOCKET_PATH: &str = "/tmp/wayclip.sock";
+const WAYCLIP_TRIGGER_PATH: &str =
+    "/home/kony/Documents/GitHub/wayclip/target/debug/wayclip_trigger";
 const MAX_FFMPEG_PROCESS: usize = 2;
 
 type Frame = (Vec<u8>, u64);
 
 struct RingBuffer {
-    buffer: VecDeque<Frame>,
+    buffer: VecDeque<Frame>, // Store Frame directly
     capacity: usize,
 }
 
@@ -42,12 +47,11 @@ impl RingBuffer {
             log!([RING] => "buffer full, popping oldest");
             self.buffer.pop_front();
         }
-        log!([RING] => "push frame: {} bytes", data.len());
-        self.buffer.push_back((data.to_vec(), pts));
+        self.buffer.push_back((data, pts));
     }
 
     fn get_and_clear(&mut self) -> Vec<Frame> {
-        let data: Vec<Frame> = self.buffer.drain(..).collect(); // get all data and clear buffer
+        let data: Vec<Frame> = self.buffer.drain(..).collect();
         log!([RING] => "get_and_clear, returning {} frames", data.len());
         data
     }
@@ -58,7 +62,7 @@ async fn setup_hyprland() {
         .args([
             "keyword",
             "bind",
-            "Alt_L,C,exec,/home/kony/Documents/GitHub/wayclip/target/debug/wayclip_trigger",
+            format!("Alt_L,C,exec,{}", WAYCLIP_TRIGGER_PATH).as_str(),
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -82,17 +86,25 @@ async fn setup_hyprland() {
 async fn main() {
     log!([INIT] => "starting...");
     gst::init().expect(err!([INIT] => "failed to init gstreamer"));
-
     log!([UNIX] => "starting unix listener");
-    let listener = UnixListener::bind("/tmp/wayclip.sock")
-        .expect(err!([UNIX] => "failed to bind unix socket (hint: try `rm /tmp/wayclip.sock`)"));
+    if metadata(SOCKET_PATH).is_ok() {
+        if let Err(e) = remove_file(SOCKET_PATH) {
+            log!([UNIX] => "failed to remove existing socket file: {}", e);
+            exit(1);
+        } else {
+            log!([UNIX] => "Removed existing socket file.");
+        }
+    }
+
+    let listener =
+        UnixListener::bind(SOCKET_PATH).expect(err!([UNIX] => "failed to bind unix socket"));
 
     if std::env::var("DESKTOP_SESSION") == Ok("hyprland".to_string()) {
         log!([HYPR] => "using hyprland");
         setup_hyprland().await;
     } else {
         log!([HYPR] => "not using hyprland");
-        log!([HYPR] => "please bind LAlt + C to /home/kony/Documents/GitHub/wayclip/target/debug/wayclip_trigger");
+        log!([HYPR] => "please bind LAlt + C to {} in your compositor", WAYCLIP_TRIGGER_PATH);
     }
 
     log!([ASH] => "creating screencast proxy");
@@ -168,7 +180,6 @@ async fn main() {
                 let data = map.as_slice().to_vec();
                 let pts = buffer.pts().unwrap().nseconds() / 1000;
 
-                log!([GST] => "got sample, size: {}, pts: {}", data.len(), pts);
                 if let Ok(mut rb) = rb_clone.lock() {
                     rb.push(data, pts);
                 } else {
@@ -181,15 +192,11 @@ async fn main() {
 
     log!([GST] => "setting pipeline to playing for constant recording");
     if let Err(err) = pipeline.set_state(gst::State::Playing) {
-        eprintln!(
-            "{}: {:?}",
-            err!([GST] => "failed to set pipeline to playing"),
-            err
-        );
+        log!([GST] => "setting pipeline to playing, {:?}", err);
         pipeline
             .set_state(gst::State::Null)
             .expect(err!([GST] => "failed to set pipeline to null after error"));
-        std::process::exit(1);
+        exit(1);
     } else {
         log!([GST] => "pipeline set to playing");
     }
@@ -198,24 +205,34 @@ async fn main() {
 
     tokio::spawn(async move {
         loop {
-            let (mut stream, _) = listener
+            let (stream, _) = listener
                 .accept()
                 .await
                 .expect(err!([UNIX] => "failed to accept unix socket"));
-            let mut buf = [0u8; 64];
-            let n = stream
-                .read(&mut buf)
-                .await
-                .expect(err!([UNIX] => "failed to read from unix socket"));
-            if n == 0 {
-                continue;
+            let mut reader = BufReader::new(stream);
+            let mut buf = String::new();
+            loop {
+                buf.clear();
+                match reader.read_line(&mut buf).await {
+                    // Added .await here
+                    Ok(n) => {
+                        if n == 0 {
+                            log!([UNIX] => "connection closed by client");
+                            break;
+                        }
+                        let msg = buf.trim().to_string();
+                        log!([UNIX] => "msg: {}", msg);
+                        if let Err(e) = tx.send(msg).await {
+                            log!([UNIX] => "failed to send message, {}", e);
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        log!([UNIX] => "failed to read from socket: {}", e);
+                        break;
+                    }
+                }
             }
-            let msg = std::str::from_utf8(&buf[..n]).unwrap_or("").trim();
-            log!([UNIX] => "msg: {}", msg);
-
-            tx.send(msg.to_string())
-                .await
-                .expect("Failed to send message to command queue");
         }
     });
 
@@ -257,6 +274,7 @@ async fn main() {
                         ])
                         .stdin(Stdio::piped())
                         .stdout(Stdio::null())
+                        .stderr(Stdio::null())
                         .spawn()
                         .expect(err!([FFMPEG] => "failed to spawn ffmpeg"));
 
@@ -271,41 +289,47 @@ async fn main() {
                         let rel = pts - last_pts;
                         let when = start + Duration::from_micros(rel);
                         sleep_until(when).await;
-                        stdin
-                            .write_all(&frame)
-                            .expect(err!([FFMPEG] => "failed to write to ffmpeg stdin"));
+                        if let Err(e) = stdin.write_all(&frame) {
+                            log!([FFMPEG] => "ffmpeg process failed, error: {}", e);
+                            break;
+                        }
                         last_pts = pts;
                     }
 
                     drop(stdin);
-                    ffmpeg
-                        .wait()
-                        .expect(err!([FFMPEG] => "failed to wait for ffmpeg"));
-                    log!([FFMPEG] => "ffmpeg done, check output file");
+                    let output = ffmpeg.wait();
+                    match output {
+                        Ok(status) => {
+                            if status.success() {
+                                log!([FFMPEG] => "ffmpeg done, check output file");
+                            } else {
+                                log!([FFMPEG] => "ffmpeg exited with error: {}", status);
+                            }
+                        }
+                        Err(e) => {
+                            log!([FFMPEG] => "ffmpeg process failed, error: {}", e);
+                        }
+                    }
                     drop(permit);
                 });
 
                 if let Err(err) = pipeline.set_state(gst::State::Playing) {
-                    eprintln!(
-                        "{}: {:?}",
-                        err!([GST] => "failed to set pipeline to playing"),
-                        err
-                    );
+                    log!([GST] => "failed to set pipeline to playing, {:?}", err);
                     pipeline
                         .set_state(gst::State::Null)
                         .expect(err!([GST] => "failed to set pipeline to null after error"));
-                    std::process::exit(1);
+                    exit(1);
                 } else {
                     log!([GST] => "pipeline resumed");
                 }
             }
             "exit" => {
                 log!([UNIX] => "exit command received, exiting cleanly");
-                if let Err(e) = std::fs::remove_file("/tmp/wayclip.sock") {
-                    eprintln!("Error removing socket file: {}", e);
+                if let Err(e) = remove_file(SOCKET_PATH) {
+                    log!([UNIX] => "failed to remove socket file, {}", e);
                 }
                 if let Err(e) = pipeline.set_state(gst::State::Null) {
-                    eprintln!("Error setting pipeline to null: {:?}", e);
+                    log!([GST] => "failed to set pipeline to null, {:?}", e);
                 }
                 break;
             }
@@ -314,4 +338,5 @@ async fn main() {
             }
         }
     }
+    log!([INIT] => "exiting main");
 }

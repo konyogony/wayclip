@@ -1,3 +1,5 @@
+use wayclip_shared::err;
+
 pub mod commands;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
