@@ -1,2 +1,0 @@
-GST_DEBUG=pipewiresrc:7,GST_CAPS:7 cargo run .
-

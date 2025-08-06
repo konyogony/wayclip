@@ -16,6 +16,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, Mutex,
 };
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::process::Command;
@@ -27,9 +28,11 @@ const SOCKET_PATH: &str = "/tmp/wayclip.sock";
 const WAYCLIP_TRIGGER_PATH: &str =
     "/home/kony/Documents/GitHub/wayclip/target/debug/wayclip_trigger";
 
-type Frame = (Vec<u8>, u64);
+type Frame = Vec<u8>;
 
 struct RingBuffer {
+    header: Vec<Frame>,
+    header_complete: bool,
     buffer: VecDeque<Frame>,
     capacity: usize,
 }
@@ -38,22 +41,43 @@ impl RingBuffer {
     fn new(capacity: usize) -> Self {
         log!([RING] => "init w/ cap {}", capacity);
         Self {
+            header: Vec::new(),
+            header_complete: false,
             buffer: VecDeque::with_capacity(capacity),
             capacity,
         }
     }
 
-    fn push(&mut self, data: Vec<u8>, pts: u64) {
+    fn push(&mut self, data: Vec<u8>, is_header: bool) {
+        if !self.header_complete && is_header {
+            log!([RING] => "Header chunk captured, size: {}", data.len());
+            self.header.push(data);
+            return;
+        }
+
+        if !self.header_complete {
+            log!([RING] => "First frame detected (non-header). Header is now complete with {} chunks.", self.header.len());
+            log!([INIT] => "Recording successfully started, and live! Ctrl + C for graceful shutdown, ALT + C to save clip (hyprland only so far)");
+            self.header_complete = true;
+        }
+
         if self.buffer.len() == self.capacity {
             self.buffer.pop_front();
         }
-        self.buffer.push_back((data, pts));
+        self.buffer.push_back(data);
     }
 
     fn get_and_clear(&mut self) -> Vec<Frame> {
-        let data: Vec<Frame> = self.buffer.drain(..).collect();
-        log!([RING] => "get_and_clear, returning {} frames", data.len());
-        data
+        if self.header.is_empty() {
+            log!([RING] => "get_and_clear called but no header was ever captured.");
+            return Vec::new();
+        }
+
+        let mut all_data = self.header.clone();
+        all_data.extend(self.buffer.drain(..));
+
+        log!([RING] => "get_and_clear, returning {} header chunks + {} frames", self.header.len(), all_data.len() - self.header.len());
+        all_data
     }
 }
 
@@ -109,6 +133,42 @@ async fn handle_bus_messages(pipeline: gst::Pipeline) {
         }
     }
     log!([GSTBUS] => "Stopped bus message handler.");
+}
+
+async fn cleanup(pipeline: &gst::Element) {
+    log!([CLEANUP] => "Starting graceful shutdown...");
+
+    if std::env::var("DESKTOP_SESSION") == Ok("hyprland".to_string()) {
+        let output = Command::new("hyprctl")
+            .args(["keyword", "unbind", "Alt_L,C"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect(err!([HYPR] => "failed to spawn hyprctl for unbind"))
+            .wait()
+            .await;
+        if let Ok(output) = output {
+            if output.success() {
+                log!([HYPR] => "bind removed successfully");
+            } else {
+                log!([HYPR] => "failed to remove bind");
+            }
+        }
+    }
+
+    if let Err(e) = pipeline.set_state(gst::State::Null) {
+        log!([GST] => "failed to set pipeline to null, {:?}", e);
+    } else {
+        log!([GST] => "pipeline set to null");
+    }
+
+    if let Err(e) = remove_file(SOCKET_PATH) {
+        log!([UNIX] => "failed to remove socket file, {}", e);
+    } else {
+        log!([UNIX] => "socket file removed");
+    }
+
+    log!([CLEANUP] => "Graceful shutdown complete.");
 }
 
 async fn setup_hyprland() {
@@ -208,14 +268,19 @@ async fn main() {
     let ring_buffer = Arc::new(Mutex::new(RingBuffer::new(FRAMES)));
     let is_saving = Arc::new(AtomicBool::new(false));
 
-    // *** FINAL FIX ***
-    // Instead of setting a property on h264parse, we add a capsfilter *after* it
-    // to enforce the byte-stream format. This is the correct, portable way.
+    // NVIDIA
     let pipeline_str = format!(
-    "pipewiresrc fd={0} path={1} ! queue ! video/x-raw,format=BGRx ! queue ! videoconvert ! video/x-raw,format=I420 ! queue ! x264enc tune=zerolatency key-int-max=60 ! h264parse config-interval=-1 ! video/x-h264,stream-format=byte-stream ! appsink name=sink",
+    "pipewiresrc fd={0} path={1} ! video/x-raw,format=BGRx ! queue ! videoconvert ! video/x-raw,format=I420 ! queue ! x264enc tune=zerolatency key-int-max=60 ! h264parse ! matroskamux ! appsink name=sink",
     pipewire_fd.as_raw_fd(),
     node_id
 );
+
+    // AMD:
+    // let pipeline_str = format!(
+    // "pipewiresrc fd={0} path={1} ! queue ! video/x-raw,format=BGRx ! queue ! videoconvert ! vaapih264enc ! h264parse ! matroskamux ! appsink name=sink",
+    // pipewire_fd.as_raw_fd(),
+    // node_id
+    // );
 
     log!([GST] => "parsing pipeline: {}", pipeline_str);
     let pipeline =
@@ -235,7 +300,6 @@ async fn main() {
     appsink.set_property("max-buffers", 5_u32);
 
     let rb_clone = ring_buffer.clone();
-    let frame_counter = Arc::new(AtomicUsize::new(0));
     log!([GST] => "setting appsink callbacks for constant recording");
     appsink.set_callbacks(
         gstreamer_app::AppSinkCallbacks::builder()
@@ -244,22 +308,19 @@ async fn main() {
                     .pull_sample()
                     .expect(err!([GST] => "failed to pull sample"));
 
-                let count = frame_counter.fetch_add(1, Ordering::Relaxed);
-                if count % 100 == 0 && count > 0 {
-                    log!([GSTBUS] => "Processed {} frames...", count);
-                }
-
                 let buffer = sample
                     .buffer()
                     .expect(err!([GST] => "failed to get buffer"));
+
+                let is_header = buffer.flags().contains(gst::BufferFlags::HEADER);
+
                 let map = buffer
                     .map_readable()
                     .expect(err!([GST] => "failed to map buffer"));
                 let data = map.as_slice().to_vec();
-                let pts = buffer.pts().unwrap().nseconds() / 1000;
 
                 if let Ok(mut rb) = rb_clone.try_lock() {
-                    rb.push(data, pts);
+                    rb.push(data, is_header);
                 }
 
                 Ok(gst::FlowSuccess::Ok)
@@ -316,113 +377,122 @@ async fn main() {
     });
 
     let job_id_counter = Arc::new(AtomicUsize::new(1));
+    let mut last_save_time = Instant::now() - Duration::from_secs(10);
+    const SAVE_COOLDOWN: Duration = Duration::from_secs(2);
 
-    while let Some(msg) = rx.recv().await {
-        match msg.as_str() {
-            "save" => {
-                if is_saving
-                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                    .is_ok()
-                {
-                    let job_id = job_id_counter.fetch_add(1, Ordering::SeqCst);
-                    log!([UNIX] => "[JOB {}] Save command received, starting process.", job_id);
-
-                    let saved_frames: Vec<Frame>;
-                    {
-                        let mut buffer = ring_buffer.lock().unwrap();
-                        saved_frames = buffer.get_and_clear();
-                    }
-
-                    let is_saving_clone = is_saving.clone();
-
-                    tokio::spawn(async move {
-                        log!([FFMPEG] => "[JOB {}] Spawning to save {} compressed frames.", job_id, saved_frames.len());
-
-                        if saved_frames.is_empty() {
-                            log!([FFMPEG] => "[JOB {}] No frames in buffer. Aborting.", job_id);
-                            is_saving_clone.store(false, Ordering::SeqCst);
-                            return;
-                        }
-
-                        let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
-                        let output_filename = format!("output_{timestamp}_{job_id}.mp4");
-
-                        let mut ffmpeg_child = Command::new("ffmpeg")
-                            .args([
-                                "-y",
-                                "-f",
-                                "h264",
-                                "-i",
-                                "-",
-                                "-c:v",
-                                "copy",
-                                &output_filename,
-                            ])
-                            .stdin(Stdio::piped())
-                            .stdout(Stdio::null())
-                            .stderr(Stdio::piped())
-                            .spawn()
-                            .expect(err!([FFMPEG] => "failed to spawn ffmpeg"));
-
-                        let mut stdin = ffmpeg_child
-                            .stdin
-                            .take()
-                            .expect("Failed to get ffmpeg stdin");
-
-                        let mut stderr = BufReader::new(ffmpeg_child.stderr.take().unwrap());
-                        let job_id_clone = job_id;
-                        tokio::spawn(async move {
-                            let mut error_output = String::new();
-                            use tokio::io::AsyncReadExt;
-                            stderr.read_to_string(&mut error_output).await.unwrap();
-                            if !error_output.is_empty() {
-                                log!([FFMPEG] => "[JOB {}] {}", job_id_clone, error_output.trim());
-                            }
-                        });
-
-                        for (frame, _) in saved_frames {
-                            if let Err(e) = stdin.write_all(&frame).await {
-                                log!([FFMPEG] => "[JOB {}] Process failed while writing frames: {}", job_id, e);
-                                break;
-                            }
-                        }
-
-                        drop(stdin);
-
-                        let output = ffmpeg_child.wait().await;
-                        match output {
-                            Ok(status) => {
-                                if status.success() {
-                                    log!([FFMPEG] => "[JOB {}] Done! Saved to {}", job_id, output_filename);
-                                } else {
-                                    log!([FFMPEG] => "[JOB {}] Exited with error: {}", job_id, status);
-                                }
-                            }
-                            Err(e) => {
-                                log!([FFMPEG] => "[JOB {}] Process failed: {}", job_id, e);
-                            }
-                        }
-                        is_saving_clone.store(false, Ordering::SeqCst);
-                        log!([FFMPEG] => "[JOB {}] Task finished and save lock released.", job_id);
-                    });
-                } else {
-                    log!([UNIX] => "Ignoring save request: A save is already in progress.");
-                }
-            }
-            "exit" => {
-                log!([UNIX] => "exit command received, exiting cleanly");
-                if let Err(e) = remove_file(SOCKET_PATH) {
-                    log!([UNIX] => "failed to remove socket file, {}", e);
-                }
-                if let Err(e) = pipeline.set_state(gst::State::Null) {
-                    log!([GST] => "failed to set pipeline to null, {:?}", e);
-                }
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                log!([INIT] => "Ctrl+C received, initiating shutdown.");
                 break;
-            }
-            _ => {
-                log!([UNIX] => "unknown msg: {}", msg);
+            },
+
+            Some(msg) = rx.recv() => {
+                match msg.as_str() {
+                    "save" => {
+                        if last_save_time.elapsed() < SAVE_COOLDOWN {
+                            log!([UNIX] => "Ignoring save request: Cooldown active.");
+                            continue;
+                        }
+
+                        if is_saving
+                            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                            .is_ok()
+                        {
+                            last_save_time = Instant::now();
+                            let job_id = job_id_counter.fetch_add(1, Ordering::SeqCst);
+                            log!([UNIX] => "[JOB {}] Save command received, starting process.", job_id);
+
+                            let saved_chunks: Vec<Frame>;
+                            {
+                                let mut buffer = ring_buffer.lock().unwrap();
+                                saved_chunks = buffer.get_and_clear();
+                            }
+
+                            let is_saving_clone = is_saving.clone();
+
+                            tokio::spawn(async move {
+                                log!([FFMPEG] => "[JOB {}] Spawning to save {} Matroska chunks.", job_id, saved_chunks.len());
+
+                                if saved_chunks.is_empty() {
+                                    log!([FFMPEG] => "[JOB {}] No chunks in buffer. Aborting.", job_id);
+                                    is_saving_clone.store(false, Ordering::SeqCst);
+                                    return;
+                                }
+
+                                let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
+                                let output_filename = format!("output_{timestamp}_{job_id}.mp4");
+
+                                let mut ffmpeg_child = Command::new("ffmpeg")
+                                    .args(["-y", "-i", "-", "-c:v", "copy", &output_filename])
+                                    .stdin(Stdio::piped())
+                                    .stdout(Stdio::null())
+                                    .stderr(Stdio::piped())
+                                    .spawn()
+                                    .expect(err!([FFMPEG] => "failed to spawn ffmpeg"));
+
+                                let mut stdin = ffmpeg_child
+                                    .stdin
+                                    .take()
+                                    .expect("Failed to get ffmpeg stdin");
+
+                                let mut stderr = BufReader::new(ffmpeg_child.stderr.take().unwrap());
+                                let job_id_clone = job_id;
+                                tokio::spawn(async move {
+                                    let mut error_output = String::new();
+                                    use tokio::io::AsyncReadExt;
+                                    stderr.read_to_string(&mut error_output).await.unwrap();
+                                    if !error_output.is_empty() {
+                                        log!([FFMPEG] => "[JOB {}] {}", job_id_clone, error_output.trim());
+                                    }
+                                });
+
+                                for chunk in saved_chunks {
+                                    if let Err(e) = stdin.write_all(&chunk).await {
+                                        log!([FFMPEG] => "[JOB {}] Process failed while writing chunks: {}", job_id, e);
+                                        break;
+                                    }
+                                }
+
+                                drop(stdin);
+
+                                let output = ffmpeg_child.wait().await;
+                                match output {
+                                    Ok(status) => {
+                                        if status.success() {
+                                            log!([FFMPEG] => "[JOB {}] Done! Saved to {}", job_id, output_filename);
+                                        } else {
+                                            log!([FFMPEG] => "[JOB {}] Exited with error: {}", job_id, status);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log!([FFMPEG] => "[JOB {}] Process failed: {}", job_id, e);
+                                    }
+                                }
+                                is_saving_clone.store(false, Ordering::SeqCst);
+                                log!([FFMPEG] => "[JOB {}] Task finished and save lock released.", job_id);
+                            });
+                        } else {
+                            log!([UNIX] => "Ignoring save request: A save is already in progress.");
+                        }
+                    }
+                    "exit" => {
+                        log!([UNIX] => "exit command received, initiating shutdown.");
+                        break;
+                    }
+                    _ => {
+                        log!([UNIX] => "unknown msg: {}", msg);
+                    }
+                }
+            },
+
+            else => {
+                log!([UNIX] => "Listener channel closed. Shutting down.");
+                break;
             }
         }
     }
+
+    cleanup(&pipeline).await;
     log!([INIT] => "exiting main");
 }
