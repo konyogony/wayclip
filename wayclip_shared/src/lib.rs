@@ -13,6 +13,7 @@ pub const RING: &str = "\x1b[33m[ring]\x1b[0m"; // yellow
 pub const HYPR: &str = "\x1b[31m[hypr]\x1b[0m"; // red
 pub const FFMPEG: &str = "\x1b[95m[ffmpeg]\x1b[0m"; // pink
 pub const TAURI: &str = "\x1b[90m[tauri]\x1b[0m"; // gray
+pub const GSTBUS: &str = "\x1b[94m[gst-bus]\x1b[0m"; // bright blue
 
 #[macro_export]
 macro_rules! log {
@@ -165,7 +166,6 @@ impl Settings {
         value.as_bool().ok_or("expected a boolean".into())
     }
 
-    // Deletes spaces, checks if only +, Ctrl, Alt, Shift, Meta and Single characters used
     fn get_shortcut(value: &Value) -> Result<String, String> {
         let raw = value
             .as_str()
@@ -178,7 +178,7 @@ impl Settings {
             return Err("shortcut cannot be empty".to_string());
         }
 
-        let allowed_modifiers = vec!["Ctrl", "Alt", "Shift", "Meta"];
+        let allowed_modifiers = ["Ctrl", "Alt", "Shift", "Meta"];
         let mut has_non_modifier = false;
 
         for part in &parts {
@@ -186,14 +186,13 @@ impl Settings {
                 continue;
             }
 
-            // must be a single character like "A", "B", "1", etc
             if part.len() == 1 && part.chars().all(|c| c.is_ascii_alphanumeric()) {
                 if has_non_modifier {
                     return Err("only one non-modifier key allowed".to_string());
                 }
                 has_non_modifier = true;
             } else {
-                return Err(format!("invalid key in shortcut: {}", part));
+                return Err(format!("invalid key in shortcut: {part}"));
             }
         }
 
@@ -203,14 +202,14 @@ impl Settings {
 
         Ok(cleaned)
     }
-    // Check if its a home path already
+
     fn get_str_valid_path(value: &Value) -> Result<String, String> {
         let rel_path = value
             .as_str()
             .ok_or_else(|| "expected a string for path".to_string())?;
 
         let home_dir = home_dir().ok_or_else(|| "home dir not found".to_string())?;
-        let clean_path = rel_path.trim_start_matches('/'); // delete starting '/'
+        let clean_path = rel_path.trim_start_matches('/');
         if clean_path.starts_with("home/") {
             return Ok(clean_path.to_string());
         }
