@@ -5,7 +5,7 @@ use ashpd::desktop::{
     PersistMode,
 };
 use futures::prelude::*;
-use gst::prelude::{Cast, ElementExt, GstBinExt, GstObjectExt, ObjectExt, PadExt};
+use gst::prelude::{Cast, ElementExt, GstBinExt, GstObjectExt, ObjectExt};
 use gstreamer as gst;
 use gstreamer_app::AppSink;
 use std::collections::VecDeque;
@@ -207,10 +207,12 @@ async fn main() {
 
     let ring_buffer = Arc::new(Mutex::new(RingBuffer::new(FRAMES)));
     let is_saving = Arc::new(AtomicBool::new(false));
-    let h264_header = Arc::new(Mutex::new(None::<Vec<u8>>));
 
+    // *** FINAL FIX ***
+    // Instead of setting a property on h264parse, we add a capsfilter *after* it
+    // to enforce the byte-stream format. This is the correct, portable way.
     let pipeline_str = format!(
-    "pipewiresrc fd={0} path={1} ! queue ! video/x-raw,format=BGRx ! queue ! videoconvert ! video/x-raw,format=I420 ! queue ! x264enc tune=zerolatency ! h264parse ! appsink name=sink",
+    "pipewiresrc fd={0} path={1} ! queue ! video/x-raw,format=BGRx ! queue ! videoconvert ! video/x-raw,format=I420 ! queue ! x264enc tune=zerolatency key-int-max=60 ! h264parse config-interval=-1 ! video/x-h264,stream-format=byte-stream ! appsink name=sink",
     pipewire_fd.as_raw_fd(),
     node_id
 );
@@ -233,25 +235,11 @@ async fn main() {
     appsink.set_property("max-buffers", 5_u32);
 
     let rb_clone = ring_buffer.clone();
-    let h264_header_clone = h264_header.clone();
     let frame_counter = Arc::new(AtomicUsize::new(0));
     log!([GST] => "setting appsink callbacks for constant recording");
     appsink.set_callbacks(
         gstreamer_app::AppSinkCallbacks::builder()
             .new_sample(move |sink| {
-                if h264_header_clone.lock().unwrap().is_none() {
-                    let pad = sink.static_pad("sink").expect("Sink has no pad");
-                    if let Some(caps) = pad.current_caps() {
-                        if let Some(s) = caps.structure(0) {
-                            if let Ok(codec_data) = s.get::<gst::Buffer>("codec_data") {
-                                let header_vec = codec_data.map_readable().unwrap().to_vec();
-                                log!([GST] => "Successfully captured H264 header on first sample.");
-                                *h264_header_clone.lock().unwrap() = Some(header_vec);
-                            }
-                        }
-                    }
-                }
-
                 let sample = sink
                     .pull_sample()
                     .expect(err!([GST] => "failed to pull sample"));
@@ -345,7 +333,6 @@ async fn main() {
                         saved_frames = buffer.get_and_clear();
                     }
 
-                    let h264_header_clone = h264_header.clone();
                     let is_saving_clone = is_saving.clone();
 
                     tokio::spawn(async move {
@@ -373,7 +360,7 @@ async fn main() {
                             ])
                             .stdin(Stdio::piped())
                             .stdout(Stdio::null())
-                            .stderr(Stdio::null())
+                            .stderr(Stdio::piped())
                             .spawn()
                             .expect(err!([FFMPEG] => "failed to spawn ffmpeg"));
 
@@ -382,20 +369,16 @@ async fn main() {
                             .take()
                             .expect("Failed to get ffmpeg stdin");
 
-                        let header_data: Option<Vec<u8>> =
-                            { h264_header_clone.lock().unwrap().clone() };
-
-                        if let Some(header) = header_data {
-                            if let Err(e) = stdin.write_all(&header).await {
-                                log!([FFMPEG] => "[JOB {}] Failed to write header: {}", job_id, e);
-                                is_saving_clone.store(false, Ordering::SeqCst);
-                                return;
+                        let mut stderr = BufReader::new(ffmpeg_child.stderr.take().unwrap());
+                        let job_id_clone = job_id;
+                        tokio::spawn(async move {
+                            let mut error_output = String::new();
+                            use tokio::io::AsyncReadExt;
+                            stderr.read_to_string(&mut error_output).await.unwrap();
+                            if !error_output.is_empty() {
+                                log!([FFMPEG] => "[JOB {}] {}", job_id_clone, error_output.trim());
                             }
-                        } else {
-                            log!([FFMPEG] => "[JOB {}] H264 header was not captured. Aborting save.", job_id);
-                            is_saving_clone.store(false, Ordering::SeqCst);
-                            return;
-                        }
+                        });
 
                         for (frame, _) in saved_frames {
                             if let Err(e) = stdin.write_all(&frame).await {
