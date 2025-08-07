@@ -6,9 +6,11 @@ use ashpd::desktop::{
 };
 use futures::prelude::*;
 use gst::prelude::{Cast, ElementExt, GstBinExt, GstObjectExt, ObjectExt};
-use gstreamer as gst;
+use gst::ClockTime;
+use gstreamer::{self as gst};
 use gstreamer_app::AppSink;
 use std::collections::VecDeque;
+use std::env;
 use std::fs::{metadata, remove_file};
 use std::os::unix::io::AsRawFd;
 use std::process::{exit, Stdio};
@@ -21,45 +23,43 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::process::Command;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
-use wayclip_shared::{err, log};
+use wayclip_shared::{err, log, Settings, WAYCLIP_TRIGGER_PATH};
 
-const FRAMES: usize = 50000;
 const SOCKET_PATH: &str = "/tmp/wayclip.sock";
-const WAYCLIP_TRIGGER_PATH: &str =
-    "/home/kony/Documents/GitHub/wayclip/wayclip_trigger/trigger_launcher.sh";
 
-const RECORD_DESKTOP_AUDIO: bool = true;
 const DESKTOP_AUDIO_DEVICE_ID: &str = "43";
 // const DESKTOP_AUDIO_DEVICE_ID: &str =
 //    "alsa_output.usb-HP__Inc_HyperX_Cloud_Alpha_Wireless_00000001-00.analog-stereo.monitor";
 const DESKTOP_AUDIO_VOLUME: u32 = 75;
 
-const RECORD_MIC_AUDIO: bool = true;
 const MIC_AUDIO_DEVICE_ID: &str = "51";
 // const MIC_AUDIO_DEVICE_ID: &str = "alsa_input.usb-Kingston_HyperX_Quadcast_4110-00.analog-stereo";
 const MIC_AUDIO_VOLUME: u32 = 100;
 
+const SAVE_COOLDOWN: Duration = Duration::from_secs(2);
+
 type Frame = Vec<u8>;
+type TimedFrame = (Frame, ClockTime);
 
 struct RingBuffer {
     header: Vec<Frame>,
     header_complete: bool,
-    buffer: VecDeque<Frame>,
-    capacity: usize,
+    buffer: VecDeque<TimedFrame>,
+    capacity_duration: ClockTime,
 }
 
 impl RingBuffer {
-    fn new(capacity: usize) -> Self {
-        log!([RING] => "init w/ cap {}", capacity);
+    fn new(capacity_duration: ClockTime) -> Self {
+        log!([RING] => "init w/ duration {}", capacity_duration);
         Self {
             header: Vec::new(),
             header_complete: false,
-            buffer: VecDeque::with_capacity(capacity),
-            capacity,
+            buffer: VecDeque::new(),
+            capacity_duration,
         }
     }
 
-    fn push(&mut self, data: Vec<u8>, is_header: bool) {
+    fn push(&mut self, data: Vec<u8>, is_header: bool, pts: Option<ClockTime>) {
         if !self.header_complete && is_header {
             log!([RING] => "Header chunk captured, size: {}", data.len());
             self.header.push(data);
@@ -68,14 +68,24 @@ impl RingBuffer {
 
         if !self.header_complete {
             log!([RING] => "First frame detected (non-header). Header is now complete with {} chunks.", self.header.len());
-            log!([INIT] => "Recording successfully started, and live! Ctrl + C for graceful shutdown, ALT + C to save clip (hyprland only so far)");
+            log!([INIT] => "Recording successfully started, and live! Ctrl + C for graceful shutdown,  to save clip (hyprland only so far)");
             self.header_complete = true;
         }
 
-        if self.buffer.len() == self.capacity {
-            self.buffer.pop_front();
+        if let Some(timestamp) = pts {
+            self.buffer.push_back((data, timestamp));
+
+            while let (Some((_, first_pts)), Some((_, last_pts))) =
+                (self.buffer.front(), self.buffer.back())
+            {
+                let duration = *last_pts - *first_pts;
+                if duration > self.capacity_duration {
+                    self.buffer.pop_front();
+                } else {
+                    break;
+                }
+            }
         }
-        self.buffer.push_back(data);
     }
 
     fn get_and_clear(&mut self) -> Vec<Frame> {
@@ -85,7 +95,7 @@ impl RingBuffer {
         }
 
         let mut all_data = self.header.clone();
-        all_data.extend(self.buffer.drain(..));
+        all_data.extend(self.buffer.drain(..).map(|(frame, _)| frame));
 
         log!([RING] => "get_and_clear, returning {} header chunks + {} frames", self.header.len(), all_data.len() - self.header.len());
         all_data
@@ -226,6 +236,8 @@ async fn main() {
     let listener =
         UnixListener::bind(SOCKET_PATH).expect(err!([UNIX] => "failed to bind unix socket"));
 
+    let settings = Settings::load();
+
     if std::env::var("DESKTOP_SESSION") == Ok("hyprland".to_string()) {
         log!([HYPR] => "using hyprland");
         setup_hyprland().await;
@@ -247,8 +259,8 @@ async fn main() {
     proxy
         .select_sources(
             &session,
-            CursorMode::Hidden,
-            enumflags2::BitFlags::from(SourceType::Monitor),
+            CursorMode::Hidden, // Doesnt change anything
+            enumflags2::BitFlags::from(SourceType::Monitor), // Neither does this
             false,
             None,
             PersistMode::Application,
@@ -277,7 +289,8 @@ async fn main() {
         .expect(err!([ASH] => "failed to open pipewire remote"));
     log!([ASH] => "pipewire fd: {:?}", pipewire_fd.as_raw_fd());
 
-    let ring_buffer = Arc::new(Mutex::new(RingBuffer::new(FRAMES)));
+    let clip_duration = gst::ClockTime::from_seconds(settings.clip_length_s);
+    let ring_buffer = Arc::new(Mutex::new(RingBuffer::new(clip_duration)));
     let is_saving = Arc::new(AtomicBool::new(false));
 
     let mut pipeline_parts = Vec::new();
@@ -291,11 +304,12 @@ async fn main() {
         videoconvert ! \
         cudaupload ! \
         queue ! \
-        nvh264enc bitrate=15000 ! \
+        nvh264enc bitrate={bitrate} ! \
         h264parse ! \
         mux.video_0",
         fd = pipewire_fd.as_raw_fd(),
-        path = node_id
+        path = node_id,
+        bitrate = settings.video_bitrate
     ));
 
     pipeline_parts.push(
@@ -304,7 +318,7 @@ async fn main() {
             .to_string(),
     );
 
-    if RECORD_DESKTOP_AUDIO {
+    if settings.include_desktop_audio {
         log!([GST] => "Enabling DESKTOP audio recording for device {}", DESKTOP_AUDIO_DEVICE_ID);
         pipeline_parts.push(format!(
             "pipewiresrc do-timestamp=true path={DESKTOP_AUDIO_DEVICE_ID} ! \
@@ -312,7 +326,7 @@ async fn main() {
         ));
     }
 
-    if RECORD_MIC_AUDIO {
+    if settings.include_mic_audio {
         log!([GST] => "Enabling MICROPHONE audio recording for device {}", MIC_AUDIO_DEVICE_ID);
         pipeline_parts.push(format!(
             "pipewiresrc do-timestamp=true path={MIC_AUDIO_DEVICE_ID} ! \
@@ -331,7 +345,7 @@ async fn main() {
         .dynamic_cast::<gst::Bin>()
         .expect("Pipeline should be a Bin");
 
-    if RECORD_DESKTOP_AUDIO {
+    if settings.include_desktop_audio {
         let desktop_vol = DESKTOP_AUDIO_VOLUME as f64 / 100.0;
         let sink_0_pad = pipeline_bin
             .by_name("mix")
@@ -342,7 +356,7 @@ async fn main() {
         log!([GST] => "Set desktop audio volume to {}", desktop_vol);
     }
 
-    if RECORD_MIC_AUDIO {
+    if settings.include_mic_audio {
         let mic_vol = MIC_AUDIO_VOLUME as f64 / 100.0;
         let sink_1_pad = pipeline_bin
             .by_name("mix")
@@ -379,6 +393,8 @@ async fn main() {
                     .buffer()
                     .expect(err!([GST] => "failed to get buffer"));
 
+                let pts = buffer.pts();
+
                 let is_header = buffer.flags().contains(gst::BufferFlags::HEADER);
 
                 let map = buffer
@@ -387,7 +403,7 @@ async fn main() {
                 let data = map.as_slice().to_vec();
 
                 if let Ok(mut rb) = rb_clone.try_lock() {
-                    rb.push(data, is_header);
+                    rb.push(data, is_header, pts);
                 }
 
                 Ok(gst::FlowSuccess::Ok)
@@ -445,7 +461,6 @@ async fn main() {
 
     let job_id_counter = Arc::new(AtomicUsize::new(1));
     let mut last_save_time = Instant::now() - Duration::from_secs(10);
-    const SAVE_COOLDOWN: Duration = Duration::from_secs(2);
 
     loop {
         tokio::select! {
@@ -477,7 +492,7 @@ async fn main() {
                             }
 
                             let is_saving_clone = is_saving.clone();
-
+                            let settings_clone = settings.clone();
                             tokio::spawn(async move {
                                 log!([FFMPEG] => "[JOB {}] Spawning to save {} Matroska chunks.", job_id, saved_chunks.len());
 
@@ -487,8 +502,10 @@ async fn main() {
                                     return;
                                 }
 
-                                let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
-                                let output_filename = format!("output_{timestamp}_{job_id}.mp4");
+                                let home_dir = env::var("HOME").expect("HOME not set");
+                                let output_filename = chrono::Local::now()
+                                    .format(format!("{home}/{path}/{format}.mp4", home = home_dir,  path= settings_clone.save_path_from_home_string, format = settings_clone.clip_name_formatting).as_str())
+                                    .to_string();
 
                                 let mut ffmpeg_child = Command::new("ffmpeg")
                                         .args([

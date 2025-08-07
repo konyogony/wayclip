@@ -14,7 +14,10 @@ pub const HYPR: &str = "\x1b[31m[hypr]\x1b[0m"; // red
 pub const FFMPEG: &str = "\x1b[95m[ffmpeg]\x1b[0m"; // pink
 pub const TAURI: &str = "\x1b[90m[tauri]\x1b[0m"; // gray
 pub const GSTBUS: &str = "\x1b[94m[gst-bus]\x1b[0m"; // bright blue
-pub const CLEANUP: &str = "\x1b[92m[cleanup]\x1b[0m";
+pub const CLEANUP: &str = "\x1b[92m[cleanup]\x1b[0m"; // bright green
+
+pub const WAYCLIP_TRIGGER_PATH: &str =
+    "/home/kony/Documents/GitHub/wayclip/wayclip_trigger/trigger_launcher.sh";
 
 #[macro_export]
 macro_rules! log {
@@ -47,11 +50,12 @@ pub type JsonObject = HashMap<String, JsonValue>;
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 pub struct Settings {
     pub clip_name_formatting: String,
-    pub clip_length_s: u16,
+    pub clip_length_s: u64,
     pub clip_resolution: String,
     pub clip_fps: u16,
-    pub include_audio: bool,
-    pub audio_bitrate: u16,
+    pub include_desktop_audio: bool,
+    pub include_mic_audio: bool,
+    pub video_bitrate: u16,
     pub video_codec: String,
     pub audio_codec: String,
     pub save_path_from_home_string: String,
@@ -63,18 +67,19 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            clip_name_formatting: String::from("%Y-%m-%d_%H:%M:%S"),
-            clip_length_s: 120,
-            clip_resolution: String::from("1920x1080"),
-            clip_fps: 30,
-            include_audio: true,
-            audio_bitrate: 128,
-            video_codec: String::from("h264"),
-            audio_codec: String::from("aac"),
-            save_path_from_home_string: String::from("Videos/wayclip"),
-            save_shortcut: String::from("Alt+C"),
-            open_gui_shortcut: String::from("Ctrl+Alt+C"),
-            toggle_notifications: true,
+            clip_name_formatting: String::from("%Y-%m-%d_%H-%M-%S"), // done
+            clip_length_s: 120,                                      // done
+            clip_resolution: String::from("1920x1080"),              // needs work
+            clip_fps: 30,                                            // prob should remove / or fix
+            include_desktop_audio: true,                             // done
+            include_mic_audio: true,                                 // done
+            video_bitrate: 15000,                                    // done
+            video_codec: String::from("h264"),                       // needs work
+            audio_codec: String::from("aac"),                        // needs work
+            save_path_from_home_string: String::from("Videos/wayclip"), // done
+            save_shortcut: String::from("Alt+C"),                    // needs work
+            open_gui_shortcut: String::from("Ctrl+Alt+C"),           // needs work
+            toggle_notifications: true,                              // should remove / remake
         }
     }
 }
@@ -111,7 +116,7 @@ impl Settings {
                 settings.clip_name_formatting = Self::get_str(&value)?;
             }
             "clip_length_s" => {
-                settings.clip_length_s = Self::get_u16(&value)?;
+                settings.clip_length_s = Self::get_u64(&value)?;
             }
             "clip_resolution" => {
                 settings.clip_resolution = Self::get_str(&value)?;
@@ -119,11 +124,14 @@ impl Settings {
             "clip_fps" => {
                 settings.clip_fps = Self::get_u16(&value)?;
             }
-            "include_audio" => {
-                settings.include_audio = Self::get_bool(&value)?;
+            "include_desktop_audio" => {
+                settings.include_desktop_audio = Self::get_bool(&value)?;
             }
-            "audio_bitrate" => {
-                settings.audio_bitrate = Self::get_u16(&value)?;
+            "include_mic_audio" => {
+                settings.include_mic_audio = Self::get_bool(&value)?;
+            }
+            "video_bitrate" => {
+                settings.video_bitrate = Self::get_u16(&value)?;
             }
             "video_codec" => {
                 settings.video_codec = Self::get_str(&value)?;
@@ -161,6 +169,13 @@ impl Settings {
             .as_f64()
             .map(|n| n as u16)
             .ok_or("expected an u16".into())
+    }
+
+    fn get_u64(value: &Value) -> Result<u64, String> {
+        value
+            .as_f64()
+            .map(|n| n as u64)
+            .ok_or("expected an u64".into())
     }
 
     fn get_bool(value: &Value) -> Result<bool, String> {
