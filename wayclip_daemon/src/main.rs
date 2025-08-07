@@ -23,10 +23,23 @@ use tokio::process::Command;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use wayclip_shared::{err, log};
 
-const FRAMES: usize = 3584;
+const FRAMES: usize = 50000;
 const SOCKET_PATH: &str = "/tmp/wayclip.sock";
 const WAYCLIP_TRIGGER_PATH: &str =
     "/home/kony/Documents/GitHub/wayclip/target/debug/wayclip_trigger";
+
+const RECORD_DESKTOP_AUDIO: bool = true;
+const DESKTOP_AUDIO_DEVICE_ID: &str = "43";
+// const DESKTOP_AUDIO_DEVICE_ID: &str =
+//    "alsa_output.usb-HP__Inc_HyperX_Cloud_Alpha_Wireless_00000001-00.analog-stereo.monitor";
+
+const DESKTOP_AUDIO_VOLUME: u32 = 75;
+
+const RECORD_MIC_AUDIO: bool = true;
+const MIC_AUDIO_DEVICE_ID: &str = "51";
+// const MIC_AUDIO_DEVICE_ID: &str = "alsa_input.usb-Kingston_HyperX_Quadcast_4110-00.analog-stereo";
+
+const MIC_AUDIO_VOLUME: u32 = 100;
 
 type Frame = Vec<u8>;
 
@@ -120,7 +133,8 @@ async fn handle_bus_messages(pipeline: gst::Pipeline) {
             MessageView::StateChanged(state) => {
                 if state
                     .src()
-                    .map_or(false, |s| s.downcast_ref::<gst::Pipeline>().is_some())
+                    .and_then(|s| s.downcast_ref::<gst::Pipeline>())
+                    .is_some()
                 {
                     log!([GSTBUS] => "Pipeline state changed from {:?} to {:?} ({:?})",
                         state.old(),
@@ -268,9 +282,12 @@ async fn main() {
     let ring_buffer = Arc::new(Mutex::new(RingBuffer::new(FRAMES)));
     let is_saving = Arc::new(AtomicBool::new(false));
 
-    // NVIDIA (CPU conversion + GPU encoding pipeline)
-    let pipeline_str = format!(
-        "pipewiresrc fd={0} path={1} ! \
+    let mut pipeline_parts = Vec::new();
+
+    pipeline_parts.push("matroskamux name=mux ! appsink name=sink".to_string());
+
+    pipeline_parts.push(format!(
+        "pipewiresrc fd={fd} path={path} ! \
         video/x-raw,format=BGRx ! \
         queue ! \
         videoconvert ! \
@@ -278,18 +295,68 @@ async fn main() {
         queue ! \
         nvh264enc bitrate=15000 ! \
         h264parse ! \
-        matroskamux ! \
-        appsink name=sink",
-        pipewire_fd.as_raw_fd(),
-        node_id
+        mux.video_0",
+        fd = pipewire_fd.as_raw_fd(),
+        path = node_id
+    ));
+
+    pipeline_parts.push(
+        "audiomixer name=mix ! \
+        opusenc ! opusparse ! queue ! mux.audio_0"
+            .to_string(),
     );
+
+    if RECORD_DESKTOP_AUDIO {
+        log!([GST] => "Enabling DESKTOP audio recording for device {}", DESKTOP_AUDIO_DEVICE_ID);
+        pipeline_parts.push(format!(
+            "pipewiresrc do-timestamp=true path={DESKTOP_AUDIO_DEVICE_ID} ! \
+            audio/x-raw ! queue ! audioconvert ! audioresample ! mix.sink_0"
+        ));
+    }
+
+    if RECORD_MIC_AUDIO {
+        log!([GST] => "Enabling MICROPHONE audio recording for device {}", MIC_AUDIO_DEVICE_ID);
+        pipeline_parts.push(format!(
+            "pipewiresrc do-timestamp=true path={MIC_AUDIO_DEVICE_ID} ! \
+            audio/x-raw ! queue ! audioconvert ! audioresample ! mix.sink_1"
+        ));
+    }
+
+    let pipeline_str = pipeline_parts.join(" ");
 
     log!([GST] => "parsing pipeline: {}", pipeline_str);
     let pipeline =
         gst::parse::launch(&pipeline_str).expect(err!([GST] => "failed to parse pipeline"));
 
+    let pipeline_bin = pipeline
+        .clone()
+        .dynamic_cast::<gst::Bin>()
+        .expect("Pipeline should be a Bin");
+
+    if RECORD_DESKTOP_AUDIO {
+        let desktop_vol = DESKTOP_AUDIO_VOLUME as f64 / 100.0;
+        let sink_0_pad = pipeline_bin
+            .by_name("mix")
+            .expect("Failed to get mixer")
+            .static_pad("sink_0")
+            .expect("Failed to get mixer sink_0");
+        sink_0_pad.set_property("volume", desktop_vol);
+        log!([GST] => "Set desktop audio volume to {}", desktop_vol);
+    }
+
+    if RECORD_MIC_AUDIO {
+        let mic_vol = MIC_AUDIO_VOLUME as f64 / 100.0;
+        let sink_1_pad = pipeline_bin
+            .by_name("mix")
+            .expect("Failed to get mixer")
+            .static_pad("sink_1")
+            .expect("Failed to get mixer sink_1");
+        sink_1_pad.set_property("volume", mic_vol);
+        log!([GST] => "Set mic audio volume to {}", mic_vol);
+    }
+
     log!([GST] => "getting appsink element");
-    let appsink = pipeline
+    let appsink = pipeline_bin
         .clone()
         .dynamic_cast::<gst::Bin>()
         .expect(err!([GST] => "failed to cast pipeline to bin"))
@@ -426,12 +493,18 @@ async fn main() {
                                 let output_filename = format!("output_{timestamp}_{job_id}.mp4");
 
                                 let mut ffmpeg_child = Command::new("ffmpeg")
-                                    .args(["-y", "-i", "-", "-c:v", "copy", &output_filename])
-                                    .stdin(Stdio::piped())
-                                    .stdout(Stdio::null())
-                                    .stderr(Stdio::piped())
-                                    .spawn()
-                                    .expect(err!([FFMPEG] => "failed to spawn ffmpeg"));
+                                        .args([
+                                            "-y",
+                                            "-i", "-",
+                                            "-c:v", "copy",
+                                            "-c:a", "copy",
+                                            &output_filename
+                                        ])
+                                        .stdin(Stdio::piped())
+                                        .stdout(Stdio::null())
+                                        .stderr(Stdio::piped())
+                                        .spawn()
+                                        .expect(err!([FFMPEG] => "failed to spawn ffmpeg"));
 
                                 let mut stdin = ffmpeg_child
                                     .stdin
@@ -454,7 +527,7 @@ async fn main() {
                                         log!([FFMPEG] => "[JOB {}] Process failed while writing chunks: {}", job_id, e);
                                         break;
                                     }
-                                }
+                                 }
 
                                 drop(stdin);
 
