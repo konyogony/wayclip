@@ -26,19 +26,17 @@ use wayclip_shared::{err, log};
 const FRAMES: usize = 50000;
 const SOCKET_PATH: &str = "/tmp/wayclip.sock";
 const WAYCLIP_TRIGGER_PATH: &str =
-    "/home/kony/Documents/GitHub/wayclip/target/debug/wayclip_trigger";
+    "/home/kony/Documents/GitHub/wayclip/wayclip_trigger/trigger_launcher.sh";
 
 const RECORD_DESKTOP_AUDIO: bool = true;
 const DESKTOP_AUDIO_DEVICE_ID: &str = "43";
 // const DESKTOP_AUDIO_DEVICE_ID: &str =
 //    "alsa_output.usb-HP__Inc_HyperX_Cloud_Alpha_Wireless_00000001-00.analog-stereo.monitor";
-
 const DESKTOP_AUDIO_VOLUME: u32 = 75;
 
 const RECORD_MIC_AUDIO: bool = true;
 const MIC_AUDIO_DEVICE_ID: &str = "51";
 // const MIC_AUDIO_DEVICE_ID: &str = "alsa_input.usb-Kingston_HyperX_Quadcast_4110-00.analog-stereo";
-
 const MIC_AUDIO_VOLUME: u32 = 100;
 
 type Frame = Vec<u8>;

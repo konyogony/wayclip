@@ -44,3 +44,7 @@
   - [ ] Option to save the clips somewhere online on a cdn
   - [ ] Share in an embed
   - [ ] Discord server (better to use konyogony.dev)
+
+# Credits:
+
+- Save sound: "window-question.oga" by [freedesktop.org](https://www.freedesktop.org/wiki/) contributors, licensed under [Creative Commons Attribution 3.0](https://creativecommons.org/licenses/by/3.0/)
