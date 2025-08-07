@@ -268,19 +268,21 @@ async fn main() {
     let ring_buffer = Arc::new(Mutex::new(RingBuffer::new(FRAMES)));
     let is_saving = Arc::new(AtomicBool::new(false));
 
-    // NVIDIA
+    // NVIDIA (CPU conversion + GPU encoding pipeline)
     let pipeline_str = format!(
-    "pipewiresrc fd={0} path={1} ! video/x-raw,format=BGRx ! queue ! videoconvert ! video/x-raw,format=I420 ! queue ! x264enc tune=zerolatency key-int-max=60 ! h264parse ! matroskamux ! appsink name=sink",
-    pipewire_fd.as_raw_fd(),
-    node_id
-);
-
-    // AMD:
-    // let pipeline_str = format!(
-    // "pipewiresrc fd={0} path={1} ! queue ! video/x-raw,format=BGRx ! queue ! videoconvert ! vaapih264enc ! h264parse ! matroskamux ! appsink name=sink",
-    // pipewire_fd.as_raw_fd(),
-    // node_id
-    // );
+        "pipewiresrc fd={0} path={1} ! \
+        video/x-raw,format=BGRx ! \
+        queue ! \
+        videoconvert ! \
+        cudaupload ! \
+        queue ! \
+        nvh264enc bitrate=15000 ! \
+        h264parse ! \
+        matroskamux ! \
+        appsink name=sink",
+        pipewire_fd.as_raw_fd(),
+        node_id
+    );
 
     log!([GST] => "parsing pipeline: {}", pipeline_str);
     let pipeline =
