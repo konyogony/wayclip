@@ -15,6 +15,7 @@ pub const FFMPEG: &str = "\x1b[95m[ffmpeg]\x1b[0m"; // pink
 pub const TAURI: &str = "\x1b[90m[tauri]\x1b[0m"; // gray
 pub const GSTBUS: &str = "\x1b[94m[gst-bus]\x1b[0m"; // bright blue
 pub const CLEANUP: &str = "\x1b[92m[cleanup]\x1b[0m"; // bright green
+pub const DEBUG: &str = "\x1b[93m[debug]\x1b[0m";
 
 pub const WAYCLIP_TRIGGER_PATH: &str =
     "/home/kony/Documents/GitHub/wayclip/wayclip_trigger/trigger_launcher.sh";

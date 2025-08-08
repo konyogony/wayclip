@@ -2,7 +2,7 @@
 
 use ashpd::desktop::{
     screencast::{CursorMode, Screencast, SourceType},
-    PersistMode,
+    PersistMode, Session,
 };
 use futures::prelude::*;
 use gst::prelude::{Cast, ElementExt, GstBinExt, GstObjectExt, ObjectExt};
@@ -27,13 +27,13 @@ use wayclip_shared::{err, log, Settings, WAYCLIP_TRIGGER_PATH};
 
 const SOCKET_PATH: &str = "/tmp/wayclip.sock";
 
-const DESKTOP_AUDIO_DEVICE_ID: &str = "43";
-// const DESKTOP_AUDIO_DEVICE_ID: &str =
-//    "alsa_output.usb-HP__Inc_HyperX_Cloud_Alpha_Wireless_00000001-00.analog-stereo.monitor";
+// To get the magic numbers:
+// pw-cli ls Node
+
+const DESKTOP_AUDIO_DEVICE_ID: &str = "alsa_output.pci-0000_0b_00.4.analog-stereo.monitor";
 const DESKTOP_AUDIO_VOLUME: u32 = 75;
 
-const MIC_AUDIO_DEVICE_ID: &str = "51";
-// const MIC_AUDIO_DEVICE_ID: &str = "alsa_input.usb-Kingston_HyperX_Quadcast_4110-00.analog-stereo";
+const MIC_AUDIO_DEVICE_ID: &str = "alsa_input.usb-Kingston_HyperX_Quadcast_4110-00.analog-stereo";
 const MIC_AUDIO_VOLUME: u32 = 100;
 
 const SAVE_COOLDOWN: Duration = Duration::from_secs(2);
@@ -68,7 +68,7 @@ impl RingBuffer {
 
         if !self.header_complete {
             log!([RING] => "First frame detected (non-header). Header is now complete with {} chunks.", self.header.len());
-            log!([INIT] => "Recording successfully started, and live! Ctrl + C for graceful shutdown,  to save clip (hyprland only so far)");
+            log!([INIT] => "Recording successfully started, and live! Ctrl + C for graceful shutdown, ALT+C to save clip (hyprland only so far)");
             self.header_complete = true;
         }
 
@@ -78,10 +78,15 @@ impl RingBuffer {
             while let (Some((_, first_pts)), Some((_, last_pts))) =
                 (self.buffer.front(), self.buffer.back())
             {
-                let duration = *last_pts - *first_pts;
-                if duration > self.capacity_duration {
-                    self.buffer.pop_front();
+                if let Some(duration) = last_pts.checked_sub(*first_pts) {
+                    if duration > self.capacity_duration {
+                        self.buffer.pop_front();
+                    } else {
+                        break;
+                    }
                 } else {
+                    log!([RING] => "Timestamp reset detected (last < first). Clearing buffer to resync.");
+                    self.buffer.clear();
                     break;
                 }
             }
@@ -157,7 +162,7 @@ async fn handle_bus_messages(pipeline: gst::Pipeline) {
     log!([GSTBUS] => "Stopped bus message handler.");
 }
 
-async fn cleanup(pipeline: &gst::Element) {
+async fn cleanup<'a>(pipeline: &gst::Element, session: &'a Session<'a, Screencast<'a>>) {
     log!([CLEANUP] => "Starting graceful shutdown...");
 
     if std::env::var("DESKTOP_SESSION") == Ok("hyprland".to_string()) {
@@ -182,6 +187,12 @@ async fn cleanup(pipeline: &gst::Element) {
         log!([GST] => "failed to set pipeline to null, {:?}", e);
     } else {
         log!([GST] => "pipeline set to null");
+    }
+
+    if let Err(e) = session.close().await {
+        log!([ASH] => "failed to close screencast session, {}", e);
+    } else {
+        log!([ASH] => "screencast session closed successfully");
     }
 
     if let Err(e) = remove_file(SOCKET_PATH) {
@@ -237,6 +248,7 @@ async fn main() {
         UnixListener::bind(SOCKET_PATH).expect(err!([UNIX] => "failed to bind unix socket"));
 
     let settings = Settings::load();
+    log!([INIT] => "Settings loaded (ignore, some are outdated): {:?}", settings);
 
     if std::env::var("DESKTOP_SESSION") == Ok("hyprland".to_string()) {
         log!([HYPR] => "using hyprland");
@@ -289,6 +301,60 @@ async fn main() {
         .expect(err!([ASH] => "failed to open pipewire remote"));
     log!([ASH] => "pipewire fd: {:?}", pipewire_fd.as_raw_fd());
 
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    // // --- START OF ISOLATION TEST ---
+    // log!([DEBUG] => "ISOLATING VIDEO ENCODING CHAIN -> FAKESINK");
+
+    // let pipeline_str = format!(
+    //     "pipewiresrc do-timestamp=true fd={} path={} ! \
+    //     video/x-raw,format=BGRx ! \
+    //     videoconvert ! \
+    //     video/x-raw,format=NV12 ! \
+    //     cudaupload ! \
+    //     nvh264enc ! \
+    //     h264parse ! \
+    //     fakesink",
+    //     pipewire_fd.as_raw_fd(),
+    //     node_id
+    // );
+
+    // log!([DEBUG] => "Parsing pipeline: {}", pipeline_str);
+
+    // match gst::parse::launch(&pipeline_str) {
+    //     Ok(pipeline) => {
+    //         log!([DEBUG] => "Pipeline parsed. Setting to PLAYING.");
+
+    //         let bus = pipeline.bus().unwrap();
+    //         let bus_task = tokio::spawn(async move {
+    //             let mut bus_stream = bus.stream();
+    //             while let Some(msg) = bus_stream.next().await {
+    //                 if let gst::MessageView::Error(err) = msg.view() {
+    //                     log!([DEBUG] => "PIPELINE ERROR: {} ({:?})", err.error(), err.debug());
+    //                     break;
+    //                 }
+    //             }
+    //         });
+
+    //         if let Err(e) = pipeline.set_state(gst::State::Playing) {
+    //             log!([DEBUG] => "Failed to set pipeline to PLAYING: {}", e);
+    //         } else {
+    //             log!([DEBUG] => "Pipeline is RUNNING. If no error appears in 10s, the video chain is valid.");
+    //             tokio::time::sleep(Duration::from_secs(10)).await;
+    //         }
+
+    //         log!([DEBUG] => "Test complete.");
+    //         bus_task.abort();
+    //         let _ = pipeline.set_state(gst::State::Null);
+    //     }
+    //     Err(e) => {
+    //         log!([DEBUG] => "Failed to PARSE pipeline: {}", e);
+    //     }
+    // }
+    // return;
+
+    tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
+
     let clip_duration = gst::ClockTime::from_seconds(settings.clip_length_s);
     let ring_buffer = Arc::new(Mutex::new(RingBuffer::new(clip_duration)));
     let is_saving = Arc::new(AtomicBool::new(false));
@@ -297,18 +363,38 @@ async fn main() {
 
     pipeline_parts.push("matroskamux name=mux ! appsink name=sink".to_string());
 
+    // pipeline_parts.push(format!(
+    //     "pipewiresrc do-timestamp=true fd={fd} path={path} ! \
+    //     video/x-raw,format=BGRx,framerate={fps}/1 ! \
+    //     videoconvert ! \
+    //     video/x-raw,format=NV12,framerate={fps}/1 ! \
+    //     queue ! \
+    //     cudaupload ! \
+    //     queue ! \
+    //     nvh264enc bitrate={bitrate} ! \
+    //     h264parse ! \
+    //     mux.video_0",
+    //     fd = pipewire_fd.as_raw_fd(),
+    //     path = node_id,
+    //     fps = settings.clip_fps,
+    //     bitrate = settings.video_bitrate
+    // ));
+
     pipeline_parts.push(format!(
-        "pipewiresrc fd={fd} path={path} ! \
+        "pipewiresrc do-timestamp=true fd={fd} path={path} ! \
         video/x-raw,format=BGRx ! \
-        queue ! \
         videoconvert ! \
+        video/x-raw,format=NV12 ! \
+        videorate ! \
+        video/x-raw,framerate={fps}/1 ! \
         cudaupload ! \
-        queue ! \
         nvh264enc bitrate={bitrate} ! \
         h264parse ! \
+        queue ! \
         mux.video_0",
         fd = pipewire_fd.as_raw_fd(),
         path = node_id,
+        fps = settings.clip_fps,
         bitrate = settings.video_bitrate
     ));
 
@@ -583,6 +669,6 @@ async fn main() {
         }
     }
 
-    cleanup(&pipeline).await;
+    cleanup(&pipeline, &session).await;
     log!([INIT] => "exiting main");
 }
