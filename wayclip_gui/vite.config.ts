@@ -1,8 +1,9 @@
 import { defineConfig } from 'vite';
+import path from 'path';
+import packageJson from './package.json';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
-// @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vitejs.dev/config/
@@ -26,6 +27,11 @@ export default defineConfig(async () => ({
         },
     },
     resolve: {
-        alias: { '@': '/src' },
+        alias: {
+            '@': path.resolve(__dirname, './src'),
+        },
+    },
+    define: {
+        'import.meta.env.PACKAGE_VERSION': JSON.stringify(packageJson.version),
     },
 }));

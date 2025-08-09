@@ -20,20 +20,19 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixListener;
+use tokio::net::{UnixListener, UnixStream};
 use tokio::process::Command;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use wayclip_shared::{err, log, Settings, WAYCLIP_TRIGGER_PATH};
 
-const SOCKET_PATH: &str = "/tmp/wayclip.sock";
-
 // To get the magic numbers:
 // pw-cli ls Node
 
-const DESKTOP_AUDIO_DEVICE_ID: &str = "alsa_output.pci-0000_0b_00.4.analog-stereo.monitor";
+// Need to move to settings
+const DESKTOP_AUDIO_DEVICE_ID: &str = "34";
 const DESKTOP_AUDIO_VOLUME: u32 = 75;
 
-const MIC_AUDIO_DEVICE_ID: &str = "alsa_input.usb-Kingston_HyperX_Quadcast_4110-00.analog-stereo";
+const MIC_AUDIO_DEVICE_ID: &str = "44";
 const MIC_AUDIO_VOLUME: u32 = 100;
 
 const SAVE_COOLDOWN: Duration = Duration::from_secs(2);
@@ -107,6 +106,18 @@ impl RingBuffer {
     }
 }
 
+fn send_status_to_gui(socket_path: String, message: String) {
+    tokio::spawn(async move {
+        if let Ok(mut stream) = UnixStream::connect(socket_path).await {
+            let _ = stream.write_all(format!("{message}\n").as_bytes()).await;
+            let _ = stream.flush().await;
+            log!([UNIX] => "Sent status '{}' to GUI", message);
+        } else {
+            log!([UNIX] => "GUI not running or socket not ready. Couldn't send status.");
+        }
+    });
+}
+
 async fn handle_bus_messages(pipeline: gst::Pipeline) {
     let bus = pipeline.bus().unwrap();
     let mut bus_stream = bus.stream();
@@ -162,7 +173,11 @@ async fn handle_bus_messages(pipeline: gst::Pipeline) {
     log!([GSTBUS] => "Stopped bus message handler.");
 }
 
-async fn cleanup<'a>(pipeline: &gst::Element, session: &'a Session<'a, Screencast<'a>>) {
+async fn cleanup<'a>(
+    pipeline: &gst::Element,
+    session: &'a Session<'a, Screencast<'a>>,
+    settings: Settings,
+) {
     log!([CLEANUP] => "Starting graceful shutdown...");
 
     if std::env::var("DESKTOP_SESSION") == Ok("hyprland".to_string()) {
@@ -195,13 +210,23 @@ async fn cleanup<'a>(pipeline: &gst::Element, session: &'a Session<'a, Screencas
         log!([ASH] => "screencast session closed successfully");
     }
 
-    if let Err(e) = remove_file(SOCKET_PATH) {
-        log!([UNIX] => "failed to remove socket file, {}", e);
+    if let Err(e) = remove_file(settings.daemon_socket_path.clone()) {
+        log!([UNIX] => "failed to remove daemon socket file, {}", e);
     } else {
-        log!([UNIX] => "socket file removed");
+        log!([UNIX] => "daemon socket file removed");
+    }
+
+    if let Err(e) = remove_file(settings.gui_socket_path.clone()) {
+        log!([UNIX] => "failed to remove gui socket file, {}", e);
+    } else {
+        log!([UNIX] => "gui socket file removed");
     }
 
     log!([CLEANUP] => "Graceful shutdown complete.");
+    send_status_to_gui(
+        settings.gui_socket_path.clone(),
+        String::from("Shutdown complete"),
+    );
 }
 
 async fn setup_hyprland() {
@@ -233,22 +258,33 @@ async fn setup_hyprland() {
 #[tokio::main]
 async fn main() {
     log!([INIT] => "starting...");
+    let settings = Settings::load();
+    log!([INIT] => "Settings loaded (ignore, some are outdated): {:?}", settings);
+
     gst::init().expect(err!([INIT] => "failed to init gstreamer"));
-    log!([UNIX] => "starting unix listener");
-    if metadata(SOCKET_PATH).is_ok() {
-        if let Err(e) = remove_file(SOCKET_PATH) {
-            log!([UNIX] => "failed to remove existing socket file: {}", e);
+    log!([UNIX] => "starting unix listeners");
+    if metadata(&settings.daemon_socket_path).is_ok() {
+        if let Err(e) = remove_file(&settings.daemon_socket_path) {
+            log!([UNIX] => "failed to remove existing daemon socket file: {}", e);
             exit(1);
         } else {
-            log!([UNIX] => "Removed existing socket file.");
+            log!([UNIX] => "Removed existing daemon socket file.");
         }
     }
 
-    let listener =
-        UnixListener::bind(SOCKET_PATH).expect(err!([UNIX] => "failed to bind unix socket"));
+    // if metadata(&settings.gui_socket_path).is_ok() {
+    //     if let Err(e) = remove_file(&settings.gui_socket_path) {
+    //         log!([UNIX] => "failed to remove existing gui socket file: {}", e);
+    //         exit(1);
+    //     } else {
+    //         log!([UNIX] => "Removed existing gui socket file.");
+    //     }
+    // }
 
-    let settings = Settings::load();
-    log!([INIT] => "Settings loaded (ignore, some are outdated): {:?}", settings);
+    send_status_to_gui(settings.gui_socket_path.clone(), String::from("Starting"));
+
+    let listener = UnixListener::bind(&settings.daemon_socket_path)
+        .expect(err!([UNIX] => "failed to bind unix socket"));
 
     if std::env::var("DESKTOP_SESSION") == Ok("hyprland".to_string()) {
         log!([HYPR] => "using hyprland");
@@ -301,60 +337,6 @@ async fn main() {
         .expect(err!([ASH] => "failed to open pipewire remote"));
     log!([ASH] => "pipewire fd: {:?}", pipewire_fd.as_raw_fd());
 
-    tokio::time::sleep(Duration::from_millis(250)).await;
-
-    // // --- START OF ISOLATION TEST ---
-    // log!([DEBUG] => "ISOLATING VIDEO ENCODING CHAIN -> FAKESINK");
-
-    // let pipeline_str = format!(
-    //     "pipewiresrc do-timestamp=true fd={} path={} ! \
-    //     video/x-raw,format=BGRx ! \
-    //     videoconvert ! \
-    //     video/x-raw,format=NV12 ! \
-    //     cudaupload ! \
-    //     nvh264enc ! \
-    //     h264parse ! \
-    //     fakesink",
-    //     pipewire_fd.as_raw_fd(),
-    //     node_id
-    // );
-
-    // log!([DEBUG] => "Parsing pipeline: {}", pipeline_str);
-
-    // match gst::parse::launch(&pipeline_str) {
-    //     Ok(pipeline) => {
-    //         log!([DEBUG] => "Pipeline parsed. Setting to PLAYING.");
-
-    //         let bus = pipeline.bus().unwrap();
-    //         let bus_task = tokio::spawn(async move {
-    //             let mut bus_stream = bus.stream();
-    //             while let Some(msg) = bus_stream.next().await {
-    //                 if let gst::MessageView::Error(err) = msg.view() {
-    //                     log!([DEBUG] => "PIPELINE ERROR: {} ({:?})", err.error(), err.debug());
-    //                     break;
-    //                 }
-    //             }
-    //         });
-
-    //         if let Err(e) = pipeline.set_state(gst::State::Playing) {
-    //             log!([DEBUG] => "Failed to set pipeline to PLAYING: {}", e);
-    //         } else {
-    //             log!([DEBUG] => "Pipeline is RUNNING. If no error appears in 10s, the video chain is valid.");
-    //             tokio::time::sleep(Duration::from_secs(10)).await;
-    //         }
-
-    //         log!([DEBUG] => "Test complete.");
-    //         bus_task.abort();
-    //         let _ = pipeline.set_state(gst::State::Null);
-    //     }
-    //     Err(e) => {
-    //         log!([DEBUG] => "Failed to PARSE pipeline: {}", e);
-    //     }
-    // }
-    // return;
-
-    tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
-
     let clip_duration = gst::ClockTime::from_seconds(settings.clip_length_s);
     let ring_buffer = Arc::new(Mutex::new(RingBuffer::new(clip_duration)));
     let is_saving = Arc::new(AtomicBool::new(false));
@@ -363,6 +345,7 @@ async fn main() {
 
     pipeline_parts.push("matroskamux name=mux ! appsink name=sink".to_string());
 
+    // Old v1
     // pipeline_parts.push(format!(
     //     "pipewiresrc do-timestamp=true fd={fd} path={path} ! \
     //     video/x-raw,format=BGRx,framerate={fps}/1 ! \
@@ -380,18 +363,19 @@ async fn main() {
     //     bitrate = settings.video_bitrate
     // ));
 
+    // Sometimes break sometimes doesnt break
     pipeline_parts.push(format!(
         "pipewiresrc do-timestamp=true fd={fd} path={path} ! \
-        video/x-raw,format=BGRx ! \
-        videoconvert ! \
-        video/x-raw,format=NV12 ! \
-        videorate ! \
-        video/x-raw,framerate={fps}/1 ! \
-        cudaupload ! \
-        nvh264enc bitrate={bitrate} ! \
-        h264parse ! \
-        queue ! \
-        mux.video_0",
+           video/x-raw,format=BGRx ! \
+           videoconvert ! \
+           video/x-raw,format=NV12 ! \
+           videorate ! \
+           video/x-raw,framerate={fps}/1 ! \
+           cudaupload ! \
+           nvh264enc bitrate={bitrate} ! \
+           h264parse ! \
+           queue ! \
+           mux.video_0",
         fd = pipewire_fd.as_raw_fd(),
         path = node_id,
         fps = settings.clip_fps,
@@ -547,6 +531,7 @@ async fn main() {
 
     let job_id_counter = Arc::new(AtomicUsize::new(1));
     let mut last_save_time = Instant::now() - Duration::from_secs(10);
+    let settings_clone = settings.clone();
 
     loop {
         tokio::select! {
@@ -562,6 +547,8 @@ async fn main() {
                             log!([UNIX] => "Ignoring save request: Cooldown active.");
                             continue;
                         }
+                        send_status_to_gui(settings_clone.gui_socket_path.clone(), String::from("Saving clip..."));
+
 
                         if is_saving
                             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -578,7 +565,7 @@ async fn main() {
                             }
 
                             let is_saving_clone = is_saving.clone();
-                            let settings_clone = settings.clone();
+                            let settings = settings_clone.clone();
                             tokio::spawn(async move {
                                 log!([FFMPEG] => "[JOB {}] Spawning to save {} Matroska chunks.", job_id, saved_chunks.len());
 
@@ -590,7 +577,7 @@ async fn main() {
 
                                 let home_dir = env::var("HOME").expect("HOME not set");
                                 let output_filename = chrono::Local::now()
-                                    .format(format!("{home}/{path}/{format}.mp4", home = home_dir,  path= settings_clone.save_path_from_home_string, format = settings_clone.clip_name_formatting).as_str())
+                                    .format(format!("{home}/{path}/{format}.mp4", home = home_dir,  path=settings.save_path_from_home_string, format = settings.clip_name_formatting).as_str())
                                     .to_string();
 
                                 let mut ffmpeg_child = Command::new("ffmpeg")
@@ -637,8 +624,10 @@ async fn main() {
                                     Ok(status) => {
                                         if status.success() {
                                             log!([FFMPEG] => "[JOB {}] Done! Saved to {}", job_id, output_filename);
+                                            send_status_to_gui(settings.gui_socket_path.clone(), String::from("Saved successfully"));
                                         } else {
                                             log!([FFMPEG] => "[JOB {}] Exited with error: {}", job_id, status);
+                                            send_status_to_gui(settings.gui_socket_path.clone(), String::from("Error during saving"));
                                         }
                                     }
                                     Err(e) => {
@@ -669,6 +658,6 @@ async fn main() {
         }
     }
 
-    cleanup(&pipeline, &session).await;
+    cleanup(&pipeline, &session, settings).await;
     log!([INIT] => "exiting main");
 }

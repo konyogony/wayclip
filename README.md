@@ -12,6 +12,8 @@
 - [gstreamer](https://wiki.archlinux.org/title/GStreamer)
 - [pipewiresrc](https://wiki.archlinux.org/title/PipeWire)
 
+Current version of wayclip works with [following](https://cdn.konyogony.dev/u/Uzbdvb.sh) libs and dependencies installed. Note that newer version may work, but they have not been thoroughly tested yet
+
 # Roadmap
 
 - [ ] Background proccess (daemon)

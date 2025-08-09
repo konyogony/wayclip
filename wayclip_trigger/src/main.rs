@@ -2,12 +2,13 @@ use rodio::{Decoder, OutputStreamBuilder, Sink};
 use std::io::Cursor;
 use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
-use wayclip_shared::{err, log};
+use wayclip_shared::{Settings, err, log};
 
 static SOUND_BYTES: &[u8] = include_bytes!("../assets/save.oga");
 
 #[tokio::main]
 async fn main() {
+    let settings = Settings::load();
     if let Ok(stream_handle) = OutputStreamBuilder::open_default_stream() {
         let sink = Sink::connect_new(stream_handle.mixer());
 
@@ -19,7 +20,7 @@ async fn main() {
     } else {
         log!([UNIX] => "couldn't open default audio stream, no audio output available");
     }
-    if let Ok(mut stream) = UnixStream::connect("/tmp/wayclip.sock").await {
+    if let Ok(mut stream) = UnixStream::connect(settings.daemon_socket_path).await {
         stream
             .write_all(b"save\n")
             .await

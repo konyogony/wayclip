@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::fs::{create_dir_all, read_to_string, write};
 use std::path::PathBuf;
 
-pub const INIT: &str = "\x1b[35m[init]\x1b[0m"; // magenta
+pub const INIT: &str = "\x1b[35m[daemon]\x1b[0m"; // magenta
 pub const UNIX: &str = "\x1b[36m[unix]\x1b[0m"; // cyan
 pub const ASH: &str = "\x1b[34m[ashpd]\x1b[0m"; // blue
 pub const GST: &str = "\x1b[32m[gst]\x1b[0m"; // green
@@ -63,6 +63,8 @@ pub struct Settings {
     pub save_shortcut: String,
     pub open_gui_shortcut: String,
     pub toggle_notifications: bool,
+    pub daemon_socket_path: String,
+    pub gui_socket_path: String,
 }
 
 impl Default for Settings {
@@ -81,6 +83,8 @@ impl Default for Settings {
             save_shortcut: String::from("Alt+C"),                    // needs work
             open_gui_shortcut: String::from("Ctrl+Alt+C"),           // needs work
             toggle_notifications: true,                              // should remove / remake
+            daemon_socket_path: String::from("/tmp/wayclipd.sock"),  // done
+            gui_socket_path: String::from("/tmp/wayclipg.sock"),     // done
         }
     }
 }
@@ -152,6 +156,9 @@ impl Settings {
             "toggle_notifications" => {
                 settings.toggle_notifications = Self::get_bool(&value)?;
             }
+            "gui_socket_path" => settings.gui_socket_path = Self::get_str(&value)?,
+            "daemon_socket_path" => settings.daemon_socket_path = Self::get_str(&value)?,
+
             _ => return Err("Invalid key has been used!".into()),
         }
         settings.save();

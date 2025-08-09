@@ -71,7 +71,7 @@ export const defaultSettings: Setting[] = [
         description: 'Whether to include dekstop audio in the clip.',
         type: 'boolean',
         defaultValue: true,
-        storageKey: 'include_dekstop_audio',
+        storageKey: 'include_desktop_audio',
         category: categories.general,
     },
     {
