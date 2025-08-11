@@ -1,5 +1,5 @@
 use serde_json::Value;
-use wayclip_shared::{err, log, Settings};
+use wayclip_shared::{log, Settings};
 
 #[tauri::command]
 pub fn update_settings(key: &str, value: Value) -> Result<(), String> {
@@ -7,7 +7,7 @@ pub fn update_settings(key: &str, value: Value) -> Result<(), String> {
         Ok(_) => Ok(()),
         Err(e) => {
             log!([TAURI] => "Failed to update settings: {}", &e);
-            Err(err!([TAURI] => "Failed to update settings: {}", &e).to_string())
+            Err(format!("Failed to update settings: {}", &e).to_string())
         }
     }
 }

@@ -1,12 +1,13 @@
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader};
+use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::UnixListener;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
     AppHandle, Emitter, Listener, Manager, Wry,
 };
-use wayclip_shared::{err, log, Settings, WAYCLIP_TRIGGER_PATH};
+use wayclip_shared::{log, Settings, WAYCLIP_TRIGGER_PATH};
 
 pub mod commands;
 
@@ -17,6 +18,24 @@ struct Payload {
 
 fn setup_socket_listener(app: AppHandle<Wry>, socket_path: String) {
     std::thread::spawn(move || {
+        if let Ok(metadata) = std::fs::metadata(&socket_path) {
+            if metadata.file_type().is_socket() {
+                if let Err(e) = std::fs::remove_file(&socket_path) {
+                    log!([TAURI] => "Failed to remove old GUI socket file at {}: {}", socket_path, e);
+                    app.emit(
+                        "daemon-status-update",
+                        Payload {
+                            message: String::from("Inactive (Socket Cleanup Failed)"),
+                        },
+                    )
+                    .unwrap();
+                    return;
+                } else {
+                    log!([TAURI] => "Removed stale GUI socket file at {}", socket_path);
+                }
+            }
+        }
+
         let listener = match UnixListener::bind(&socket_path) {
             Ok(listener) => listener,
             Err(e) => {
@@ -91,6 +110,8 @@ pub fn run() {
                 ],
             )?;
 
+            let tray_menu = menu.clone();
+
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
@@ -127,17 +148,21 @@ pub fn run() {
                 .build(app)?;
 
             setup_socket_listener(app.handle().clone(), settings.gui_socket_path);
-            let app_handle = app.handle().clone();
             app.listen("daemon-status-update", move |event| {
                 let payload = event.payload();
-                if let Ok(p) = serde_json::from_str::<Payload>(payload) {
-                    if let Some(menu) = app_handle.menu() {
-                        if let Some(item) = menu.get("daemon_status") {
+                log!([TAURI] => "Recieved message: {}", &payload);
+                match serde_json::from_str::<Payload>(payload) {
+                    Ok(p) => {
+                        if let Some(item) = tray_menu.get("daemon_status") {
                             let new_text = format!("Status: {}", p.message);
+                            log!([TAURI] => "Setting item daemon_status: {}", &new_text);
                             if let Err(e) = item.as_menuitem().unwrap().set_text(new_text) {
                                 log!([TAURI] => "Failed to update tray text: {e}");
                             }
                         }
+                    }
+                    Err(e) => {
+                        log!([TAURI] => "Failed to parse Payload JSON: {e}");
                     }
                 }
             });
@@ -164,5 +189,5 @@ pub fn run() {
             commands::pull_settings
         ])
         .run(tauri::generate_context!())
-        .expect(err!([TAURI] => "failed to run tauri"));
+        .expect("Failed to run tauri");
 }

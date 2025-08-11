@@ -2,10 +2,10 @@ use dirs::{config_dir, home_dir};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::fs::{create_dir_all, read_to_string, write};
+use std::fs::{create_dir_all, write};
 use std::path::PathBuf;
 
-pub const INIT: &str = "\x1b[35m[daemon]\x1b[0m"; // magenta
+pub const DAEMON: &str = "\x1b[35m[daemon]\x1b[0m"; // magenta
 pub const UNIX: &str = "\x1b[36m[unix]\x1b[0m"; // cyan
 pub const ASH: &str = "\x1b[34m[ashpd]\x1b[0m"; // blue
 pub const GST: &str = "\x1b[32m[gst]\x1b[0m"; // green
@@ -17,20 +17,28 @@ pub const GSTBUS: &str = "\x1b[94m[gst-bus]\x1b[0m"; // bright blue
 pub const CLEANUP: &str = "\x1b[92m[cleanup]\x1b[0m"; // bright green
 pub const DEBUG: &str = "\x1b[93m[debug]\x1b[0m";
 
+pub mod logging;
+
 pub const WAYCLIP_TRIGGER_PATH: &str =
     "/home/kony/Documents/GitHub/wayclip/wayclip_trigger/trigger_launcher.sh";
 
 #[macro_export]
-macro_rules! log {
-    ([ $tag:ident ] => $($arg:tt)*) => {
-        println!("{} {}", $crate::$tag, format!($($arg)*));
+macro_rules! log_to {
+    ($logger:expr, $level:ident, [$tag:ident] => $($arg:tt)*) => {
+        {
+            $logger.log(
+                $crate::logging::LogLevel::$level,
+                $crate::$tag,
+                &format!($($arg)*),
+            );
+        }
     };
 }
 
 #[macro_export]
-macro_rules! err {
-    ([ $tag:ident ] => $($arg:tt)*) => {
-        format!("{} {}", $crate::$tag, format!($($arg)*)).as_str()
+macro_rules! log {
+    ([$tag:ident] => $($arg:tt)*) => {
+        println!("{} {}", $crate::$tag, format!($($arg)*));
     };
 }
 
@@ -73,7 +81,7 @@ impl Default for Settings {
             clip_name_formatting: String::from("%Y-%m-%d_%H-%M-%S"), // done
             clip_length_s: 120,                                      // done
             clip_resolution: String::from("1920x1080"),              // needs work
-            clip_fps: 30,                                            // prob should remove / or fix
+            clip_fps: 60,                                            // prob should remove / or fix
             include_desktop_audio: true,                             // done
             include_mic_audio: true,                                 // done
             video_bitrate: 15000,                                    // done
@@ -99,10 +107,20 @@ impl Settings {
 
     pub fn load() -> Self {
         let path = Self::config_path();
-        if let Ok(data) = read_to_string(&path) {
-            serde_json::from_str(&data).unwrap_or_default()
-        } else {
-            Default::default()
+        log!([DEBUG] => "Attempting to read settings from: {:?}", path);
+
+        match std::fs::read_to_string(&path) {
+            Ok(data) => match serde_json::from_str(&data) {
+                Ok(settings) => settings,
+                Err(e) => {
+                    log!([DEBUG] => "FATAL: Could not parse settings.json. The file is invalid. Error: {}", e);
+                    panic!()
+                }
+            },
+            Err(_) => {
+                log!([DEBUG] => "No settings file found at {:?}, creating default settings.", path);
+                Default::default()
+            }
         }
     }
 
