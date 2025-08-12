@@ -1,13 +1,10 @@
 use ashpd::desktop::{
     screencast::{CursorMode, Screencast, SourceType},
-    PersistMode, Session,
+    PersistMode,
 };
-use futures::prelude::*;
-use gst::prelude::{Cast, ElementExt, GstBinExt, GstObjectExt, ObjectExt};
-use gst::ClockTime;
+use gst::prelude::{Cast, ElementExt, GstBinExt, ObjectExt};
 use gstreamer::{self as gst};
 use gstreamer_app::AppSink;
-use std::collections::VecDeque;
 use std::env;
 use std::fs::{create_dir_all, metadata, remove_file};
 use std::os::unix::io::AsRawFd;
@@ -18,16 +15,20 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{UnixListener, UnixStream};
+use tokio::net::UnixListener;
 use tokio::process::Command;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
-use wayclip_shared::{log_to, logging::Logger, Settings, WAYCLIP_TRIGGER_PATH};
+use wayclip_core::ring::RingBuffer;
+use wayclip_core::{
+    cleanup, handle_bus_messages, log_to, logging::Logger, send_status_to_gui, setup_hyprland,
+    Settings,
+};
 
 // To get the magic numbers:
 // pw-cli ls Node
 
 // Need to move to settings
-const DESKTOP_AUDIO_DEVICE_ID: &str = "61";
+const DESKTOP_AUDIO_DEVICE_ID: &str = "45";
 const DESKTOP_AUDIO_VOLUME: u32 = 75;
 // id 34, type PipeWire:Interface:Node/3
 // 		object.serial = "62"
@@ -42,7 +43,7 @@ const DESKTOP_AUDIO_VOLUME: u32 = 75;
 // 		node.nick = "HyperX Cloud Alpha Wireless"
 // 		media.class = "Audio/Sink"
 
-const MIC_AUDIO_DEVICE_ID: &str = "44";
+const MIC_AUDIO_DEVICE_ID: &str = "42";
 const MIC_AUDIO_VOLUME: u32 = 100;
 // id 44, type PipeWire:Interface:Node/3
 // 	object.serial = "65"
@@ -58,238 +59,6 @@ const MIC_AUDIO_VOLUME: u32 = 100;
 // 	media.class = "Audio/Source"
 
 const SAVE_COOLDOWN: Duration = Duration::from_secs(2);
-const EBML_MAGIC: &[u8] = b"\x1A\x45\xDF\xA3";
-
-type Frame = Vec<u8>;
-type TimedFrame = (Frame, ClockTime);
-
-struct RingBuffer {
-    header: Vec<Frame>,
-    header_complete: bool,
-    buffer: VecDeque<TimedFrame>,
-    capacity_duration: ClockTime,
-    logger: Logger,
-}
-
-impl RingBuffer {
-    fn new(capacity_duration: ClockTime, logger: &Logger) -> Self {
-        log_to!(*logger, Info, [RING] => "init w/ duration {capacity_duration}");
-        Self {
-            header: Vec::new(),
-            header_complete: false,
-            buffer: VecDeque::new(),
-            capacity_duration,
-            logger: logger.clone(),
-        }
-    }
-
-    fn push(&mut self, data: Vec<u8>, is_header: bool, pts: Option<ClockTime>) {
-        if !self.header_complete {
-            let looks_like_ebml = data.windows(4).any(|w| w == EBML_MAGIC);
-            if is_header || (self.header.is_empty() && looks_like_ebml) {
-                log_to!(self.logger, Debug, [RING] => "Header chunk captured (heuristic), size: {}", data.len());
-                self.header.push(data);
-                return;
-            }
-        }
-
-        if !self.header_complete {
-            log_to!(self.logger, Info, [RING] => "First frame detected (non-header). Header is now complete with {} chunks.", self.header.len());
-            log_to!(self.logger, Info, [DAEMON] => "Recording successfully started, and live! Ctrl + C for graceful shutdown, ALT+C to save clip (hyprland only so far)");
-            self.header_complete = true;
-        }
-
-        if let Some(timestamp) = pts {
-            self.buffer.push_back((data, timestamp));
-
-            while let (Some((_, first_pts)), Some((_, last_pts))) =
-                (self.buffer.front(), self.buffer.back())
-            {
-                if let Some(duration) = last_pts.checked_sub(*first_pts) {
-                    if duration > self.capacity_duration {
-                        self.buffer.pop_front();
-                    } else {
-                        break;
-                    }
-                } else {
-                    log_to!(self.logger, Warn, [RING] => "Timestamp reset detected (last < first). Clearing buffer to resync.");
-                    self.buffer.clear();
-                    break;
-                }
-            }
-        }
-    }
-
-    fn get_and_clear(&mut self) -> Vec<Frame> {
-        if self.header.is_empty() {
-            log_to!(self.logger, Error, [RING] => "get_and_clear called but no header was ever captured.");
-            return Vec::new();
-        }
-
-        let mut all_data = self.header.clone();
-        all_data.extend(self.buffer.drain(..).map(|(frame, _)| frame));
-
-        log_to!(self.logger, Info,
-            [RING] => "get_and_clear, returning {} header chunks + {} frames",
-            self.header.len(),
-            all_data.len() - self.header.len()
-        );
-        all_data
-    }
-}
-
-fn send_status_to_gui(socket_path: String, message: String, logger: &Logger) {
-    let logger_clone = logger.clone();
-    tokio::spawn(async move {
-        if let Ok(mut stream) = UnixStream::connect(socket_path).await {
-            let _ = stream.write_all(format!("{message}\n").as_bytes()).await;
-            let _ = stream.flush().await;
-            log_to!(logger_clone, Info, [UNIX] => "Sent status '{}' to GUI", message);
-        } else {
-            log_to!(logger_clone, Warn, [UNIX] => "GUI not running or socket not ready. Couldn't send status.");
-        }
-    });
-}
-
-async fn handle_bus_messages(pipeline: gst::Pipeline, logger: Logger) {
-    let bus = pipeline.bus().unwrap();
-    let mut bus_stream = bus.stream();
-
-    log_to!(logger, Info, [GSTBUS] => "Started bus message handler.");
-    while let Some(msg) = bus_stream.next().await {
-        use gst::MessageView;
-        match msg.view() {
-            MessageView::Error(err) => {
-                let src_name = err
-                    .src()
-                    .map_or_else(|| "None".to_string(), |s| s.path_string().to_string());
-                let error_msg = err.error().to_string();
-                let debug_info = err.debug().map_or_else(
-                    || "No debug info".to_string(),
-                    |g_string| g_string.to_string(),
-                );
-                log_to!(logger, Error, [GSTBUS] => "Error from element {}: {} ({})", src_name, error_msg, debug_info);
-                if error_msg.to_lowercase().contains("unhandled format")
-                    || debug_info
-                        .to_lowercase()
-                        .contains("format negotiation failed")
-                {
-                    log_to!(logger, Warn, [GSTBUS] => "Detected format negotiation failure (PipeWire -> GStreamer). Consider allowing automatic format negotiation (remove rigid caps on pipewiresrc) or recreating the pipeline.");
-                }
-                break;
-            }
-            MessageView::Warning(warning) => {
-                let src_name = warning
-                    .src()
-                    .map_or_else(|| "None".to_string(), |s| s.path_string().to_string());
-                let error_msg = warning.error().to_string();
-                let debug_info = warning.debug().map_or_else(
-                    || "No debug info".to_string(),
-                    |g_string| g_string.to_string(),
-                );
-                log_to!(logger, Warn, [GSTBUS] => "Warning from element {}: {} ({})", src_name, error_msg, debug_info);
-            }
-            MessageView::Eos(_) => {
-                log_to!(logger, Info, [GSTBUS] => "Received End-Of-Stream");
-                break;
-            }
-            MessageView::StateChanged(state) => {
-                if state
-                    .src()
-                    .and_then(|s| s.downcast_ref::<gst::Pipeline>())
-                    .is_some()
-                {
-                    log_to!(logger, Debug, [GSTBUS] => "Pipeline state changed from {:?} to {:?} ({:?})", state.old(), state.current(), state.pending());
-                }
-            }
-            _ => {}
-        }
-    }
-    log_to!(logger, Info, [GSTBUS] => "Stopped bus message handler.");
-}
-
-async fn cleanup(
-    pipeline: &gst::Element,
-    session: &Session<'_, Screencast<'_>>,
-    settings: Settings,
-    logger: Logger,
-) {
-    send_status_to_gui(
-        settings.gui_socket_path.clone(),
-        String::from("Shuting down..."),
-        &logger,
-    );
-
-    log_to!(logger, Info, [CLEANUP] => "Starting graceful shutdown...");
-
-    if std::env::var("DESKTOP_SESSION") == Ok("hyprland".to_string()) {
-        let output = Command::new("hyprctl")
-            .args(["keyword", "unbind", "Alt_L,C"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("Failed to spawn hyprctl for unbind")
-            .wait()
-            .await;
-        if let Ok(output) = output {
-            if output.success() {
-                log_to!(logger, Info, [HYPR] => "Bind removed successfully");
-            } else {
-                log_to!(logger, Error, [HYPR] => "Failed to remove bind");
-            }
-        }
-    }
-
-    if let Err(e) = pipeline.set_state(gst::State::Null) {
-        log_to!(logger, Error, [GST] => "Failed to set pipeline to null, {:?}", e);
-    } else {
-        log_to!(logger, Info, [GST] => "Pipeline set to null");
-    }
-
-    if let Err(e) = session.close().await {
-        log_to!(logger, Error, [ASH] => "Failed to close screencast session, {}", e);
-    } else {
-        log_to!(logger, Info, [ASH] => "Screencast session closed successfully");
-    }
-
-    if let Err(e) = remove_file(settings.daemon_socket_path.clone()) {
-        log_to!(logger, Warn, [UNIX] => "Failed to remove daemon socket file, {}", e);
-    } else {
-        log_to!(logger, Info, [UNIX] => "Daemon socket file removed");
-    }
-
-    send_status_to_gui(
-        settings.gui_socket_path.clone(),
-        String::from("Inactive"),
-        &logger,
-    );
-    log_to!(logger, Info,[CLEANUP] => "Graceful shutdown complete.");
-}
-
-async fn setup_hyprland(logger: &Logger) {
-    let output = Command::new("hyprctl")
-        .args([
-            "keyword",
-            "bind",
-            format!("Alt_L,C,exec,{WAYCLIP_TRIGGER_PATH}").as_str(),
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("Failed to spawn hyprctl")
-        .wait()
-        .await;
-    if let Ok(output) = output {
-        if output.success() {
-            log_to!(*logger, Info, [HYPR] => "Bind added successfully");
-        } else {
-            log_to!(*logger, Error, [HYPR] => "Bind failed");
-            log_to!(*logger, Error, [HYPR] => "Error: {}", output.to_string());
-        }
-    } else {
-        log_to!(*logger, Error, [HYPR] => "Failed to add bind hyprctl");
-    }
-}
 
 #[tokio::main]
 async fn main() {
@@ -446,13 +215,13 @@ async fn main() {
 
     pipeline_parts.push(format!(
         "pipewiresrc do-timestamp=true fd={fd} path={path} ! \
-     queue max-size-buffers=8 leaky=downstream ! \
-     videoconvert ! videoscale ! \
-     video/x-raw,format=(string)NV12 ! \
-     videorate ! video/x-raw,framerate={fps}/1 ! \
-     queue max-size-buffers=8 leaky=downstream ! \
-     cudaupload ! nvh264enc bitrate={bitrate} ! \
-     h264parse ! queue ! mux.video_0",
+        queue max-size-buffers=8 leaky=downstream ! \
+        videoconvert ! videoscale ! \
+        video/x-raw,format=(string)NV12 ! \
+        videorate ! video/x-raw,framerate={fps}/1 ! \
+        queue max-size-buffers=8 leaky=downstream ! \
+        cudaupload ! nvh264enc bitrate={bitrate} ! \
+        h264parse ! queue ! mux.video_0",
         fd = pipewire_fd.as_raw_fd(),
         path = node_id,
         fps = settings.clip_fps,

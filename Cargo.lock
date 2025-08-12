@@ -5525,20 +5525,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "wayclip_daemon"
+name = "wayclip_core"
 version = "0.1.0"
 dependencies = [
  "ashpd",
  "chrono",
  "daemonize",
+ "dirs",
  "enumflags2",
  "futures",
  "gstreamer",
  "gstreamer-app",
  "libc",
+ "once_cell",
+ "rodio",
+ "serde",
+ "serde_json",
+ "strip-ansi-escapes",
  "subprocess",
  "tokio",
- "wayclip_shared",
  "wayland-client",
  "xcap",
 ]
@@ -5557,28 +5562,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-opener",
  "tokio",
- "wayclip_shared",
-]
-
-[[package]]
-name = "wayclip_shared"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "dirs",
- "serde",
- "serde_json",
- "strip-ansi-escapes",
-]
-
-[[package]]
-name = "wayclip_trigger"
-version = "0.1.0"
-dependencies = [
- "once_cell",
- "rodio",
- "tokio",
- "wayclip_shared",
+ "wayclip_core",
 ]
 
 [[package]]

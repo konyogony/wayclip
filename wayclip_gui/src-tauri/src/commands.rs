@@ -1,20 +1,9 @@
+use crate::types::{ClipData, ClipJsonData};
+use crate::{get_video_duration, write_json_data};
 use chrono::{DateTime, Local};
-use dirs::{config_dir, home_dir};
-use mp4::Mp4Reader;
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-use serde_json::Value;
-use std::io::Cursor;
-use std::path::PathBuf;
+use serde_json::{json, Value};
 use tokio::fs;
-use tokio::io::AsyncWriteExt;
-use wayclip_shared::{log, Settings};
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Tag {
-    name: String,
-    color: String,
-}
+use wayclip_core::{log, Settings};
 
 #[tauri::command]
 pub fn update_settings(key: &str, value: Value) -> Result<(), String> {
@@ -33,35 +22,11 @@ pub fn pull_settings() -> serde_json::Value {
     Settings::to_json()
 }
 
-#[derive(Serialize)]
-pub struct ClipData {
-    name: String,
-    path: String,
-    length: f64,
-    size: u64,
-    created_at: DateTime<Local>,
-    updated_at: DateTime<Local>,
-    tags: Vec<Tag>,
-    liked: bool,
-}
-
-#[derive(Deserialize, Clone)]
-struct ClipJsonData {
-    #[serde(default)]
-    tags: Vec<Tag>,
-    #[serde(default)]
-    liked: bool,
-}
-
 #[tauri::command(async)]
 pub async fn pull_clips() -> Vec<ClipData> {
     let settings = Settings::load();
-    let home_dir = home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let json_path = config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("wayclip")
-        .join("data.json");
-    let clips_dir_path = home_dir.join(&settings.save_path_from_home_string);
+    let clips_dir_path = Settings::home_path().join(&settings.save_path_from_home_string);
+    let json_path = Settings::config_path().join("wayclip").join("data.json");
 
     let mut data: Value = if json_path.exists() {
         let contents = match fs::read_to_string(&json_path).await {
@@ -179,39 +144,4 @@ pub async fn pull_clips() -> Vec<ClipData> {
     }
 
     clips
-}
-
-async fn get_video_duration(path: &PathBuf) -> Result<f64, Box<dyn std::error::Error>> {
-    let file_bytes = fs::read(path).await?;
-    let size = file_bytes.len() as u64;
-    let reader = Cursor::new(file_bytes);
-    let mp4 = Mp4Reader::read_header(reader, size)?;
-
-    let duration = mp4.moov.mvhd.duration;
-    let timescale = mp4.moov.mvhd.timescale;
-
-    if timescale > 0 {
-        Ok(duration as f64 / timescale as f64)
-    } else {
-        Ok(0.0)
-    }
-}
-
-async fn write_json_data(path: &PathBuf, data: &Value) -> Result<(), String> {
-    let content =
-        serde_json::to_string_pretty(data).map_err(|e| format!("Failed to serialize JSON: {e}"))?;
-
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .create(true)
-        .open(path)
-        .await
-        .map_err(|e| format!("Failed to open {} for writing: {}", path.display(), e))?;
-
-    file.write_all(content.as_bytes())
-        .await
-        .map_err(|e| format!("Failed to write to {}: {}", path.display(), e))?;
-
-    Ok(())
 }

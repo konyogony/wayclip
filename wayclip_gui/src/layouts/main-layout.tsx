@@ -5,7 +5,7 @@ import { routes } from '@/lib/routes';
 import { RxArrowLeft, RxArrowRight, RxCross2 } from '@vertisanpro/react-icons/rx';
 import { Sidebar } from '@/components/sidebar';
 import Toaster from '@/components/toaster';
-import Logo from '../../src-tauri/icons/logo3.png';
+import Logo from '../../src-tauri/icons/l.png';
 import { createContext, useState, useContext } from 'react';
 
 type SidebarContextType = {

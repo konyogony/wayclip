@@ -1,13 +1,19 @@
 use rodio::{Decoder, OutputStreamBuilder, Sink};
+use std::env;
 use std::io::Cursor;
 use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
-use wayclip_shared::{Settings, log};
+use wayclip_core::{log, Settings};
 
-static SOUND_BYTES: &[u8] = include_bytes!("../assets/save.oga");
+static SOUND_BYTES: &[u8] = include_bytes!("../../assets/save.oga");
 
 #[tokio::main]
 async fn main() {
+    // For sounds
+    let uid = unsafe { libc::getuid() };
+    let runtime_dir = format!("/run/user/{uid}");
+    env::set_var("XDG_RUNTIME_DIR", runtime_dir);
+
     let settings = Settings::load();
     if let Ok(stream_handle) = OutputStreamBuilder::open_default_stream() {
         let sink = Sink::connect_new(stream_handle.mixer());

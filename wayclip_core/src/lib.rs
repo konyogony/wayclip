@@ -1,9 +1,18 @@
+use crate::logging::Logger;
+use ashpd::desktop::{screencast::Screencast, Session};
 use dirs::{config_dir, home_dir};
+use futures::prelude::*;
+use gstreamer::prelude::{Cast, ElementExt, GstObjectExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::fs::remove_file;
 use std::fs::{create_dir_all, write};
 use std::path::PathBuf;
+use std::process::Stdio;
+use tokio::io::AsyncWriteExt;
+use tokio::net::UnixStream;
+use tokio::process::Command;
 
 pub const DAEMON: &str = "\x1b[35m[daemon]\x1b[0m"; // magenta
 pub const UNIX: &str = "\x1b[36m[unix]\x1b[0m"; // cyan
@@ -15,13 +24,17 @@ pub const FFMPEG: &str = "\x1b[95m[ffmpeg]\x1b[0m"; // pink
 pub const TAURI: &str = "\x1b[90m[tauri]\x1b[0m"; // gray
 pub const GSTBUS: &str = "\x1b[94m[gst-bus]\x1b[0m"; // bright blue
 pub const CLEANUP: &str = "\x1b[92m[cleanup]\x1b[0m"; // bright green
-pub const DEBUG: &str = "\x1b[93m[debug]\x1b[0m";
+pub const DEBUG: &str = "\x1b[93m[debug]\x1b[0m"; // idk
 
 pub mod logging;
+pub mod ring;
 
-pub const WAYCLIP_TRIGGER_PATH: &str =
-    "/home/kony/Documents/GitHub/wayclip/wayclip_trigger/trigger_launcher.sh";
+pub const WAYCLIP_TRIGGER_PATH: &str = "/home/kony/Documents/GitHub/wayclip/target/debug/trigger";
 
+// Former shared lib related
+
+// Logs to file & console, Ex: log_to!(logger, Warn, [TAURI] => "Message")
+// If Debug is selected, logs only to file
 #[macro_export]
 macro_rules! log_to {
     ($logger:expr, $level:ident, [$tag:ident] => $($arg:tt)*) => {
@@ -35,6 +48,7 @@ macro_rules! log_to {
     };
 }
 
+// Logs only to console
 #[macro_export]
 macro_rules! log {
     ([$tag:ident] => $($arg:tt)*) => {
@@ -81,7 +95,7 @@ impl Default for Settings {
             clip_name_formatting: String::from("%Y-%m-%d_%H-%M-%S"), // done
             clip_length_s: 120,                                      // done
             clip_resolution: String::from("1920x1080"),              // needs work
-            clip_fps: 60,                                            // prob should remove / or fix
+            clip_fps: 60,                                            // done
             include_desktop_audio: true,                             // done
             include_mic_audio: true,                                 // done
             video_bitrate: 15000,                                    // done
@@ -98,12 +112,12 @@ impl Default for Settings {
 }
 
 impl Settings {
-    // TODO: Rewrite to return actual config dir and home dir path, later to be used in GUI
     pub fn config_path() -> PathBuf {
-        config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("wayclip")
-            .join("settings.json")
+        config_dir().unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    pub fn home_path() -> PathBuf {
+        home_dir().unwrap_or_else(|| PathBuf::from("."))
     }
 
     pub fn load() -> Self {
@@ -126,7 +140,7 @@ impl Settings {
     }
 
     pub fn save(&self) {
-        let path = Self::config_path();
+        let path = Self::config_path().join("wayclip").join("settings.json");
         if let Some(parent) = path.parent() {
             let _ = create_dir_all(parent);
         }
@@ -251,12 +265,11 @@ impl Settings {
             .as_str()
             .ok_or_else(|| "expected a string for path".to_string())?;
 
-        let home_dir = home_dir().ok_or_else(|| "home dir not found".to_string())?;
         let clean_path = rel_path.trim_start_matches('/');
         if clean_path.starts_with("home/") {
             return Ok(clean_path.to_string());
         }
-        let full_path = home_dir.join(clean_path);
+        let full_path = Self::home_path().join(clean_path);
 
         Ok(full_path.to_string_lossy().into_owned())
     }
@@ -264,4 +277,159 @@ impl Settings {
     pub fn to_json() -> serde_json::Value {
         serde_json::to_value(Self::load()).unwrap()
     }
+}
+
+// Recording related
+
+pub fn send_status_to_gui(socket_path: String, message: String, logger: &Logger) {
+    let logger_clone = logger.clone();
+    tokio::spawn(async move {
+        if let Ok(mut stream) = UnixStream::connect(socket_path).await {
+            let _ = stream.write_all(format!("{message}\n").as_bytes()).await;
+            let _ = stream.flush().await;
+            log_to!(logger_clone, Info, [UNIX] => "Sent status '{}' to GUI", message);
+        } else {
+            log_to!(logger_clone, Warn, [UNIX] => "GUI not running or socket not ready. Couldn't send status.");
+        }
+    });
+}
+
+pub async fn handle_bus_messages(pipeline: gstreamer::Pipeline, logger: Logger) {
+    let bus = pipeline.bus().unwrap();
+    let mut bus_stream = bus.stream();
+
+    log_to!(logger, Info, [GSTBUS] => "Started bus message handler.");
+    while let Some(msg) = bus_stream.next().await {
+        use gstreamer::MessageView;
+        match msg.view() {
+            MessageView::Error(err) => {
+                let src_name = err
+                    .src()
+                    .map_or_else(|| "None".to_string(), |s| s.path_string().to_string());
+                let error_msg = err.error().to_string();
+                let debug_info = err.debug().map_or_else(
+                    || "No debug info".to_string(),
+                    |g_string| g_string.to_string(),
+                );
+                log_to!(logger, Error, [GSTBUS] => "Error from element {}: {} ({})", src_name, error_msg, debug_info);
+                if error_msg.to_lowercase().contains("unhandled format")
+                    || debug_info
+                        .to_lowercase()
+                        .contains("format negotiation failed")
+                {
+                    log_to!(logger, Warn, [GSTBUS] => "Detected format negotiation failure (PipeWire -> GStreamer). Consider allowing automatic format negotiation (remove rigid caps on pipewiresrc) or recreating the pipeline.");
+                }
+                break;
+            }
+            MessageView::Warning(warning) => {
+                let src_name = warning
+                    .src()
+                    .map_or_else(|| "None".to_string(), |s| s.path_string().to_string());
+                let error_msg = warning.error().to_string();
+                let debug_info = warning.debug().map_or_else(
+                    || "No debug info".to_string(),
+                    |g_string| g_string.to_string(),
+                );
+                log_to!(logger, Warn, [GSTBUS] => "Warning from element {}: {} ({})", src_name, error_msg, debug_info);
+            }
+            MessageView::Eos(_) => {
+                log_to!(logger, Info, [GSTBUS] => "Received End-Of-Stream");
+                break;
+            }
+            MessageView::StateChanged(state) => {
+                if state
+                    .src()
+                    .and_then(|s| s.downcast_ref::<gstreamer::Pipeline>())
+                    .is_some()
+                {
+                    log_to!(logger, Debug, [GSTBUS] => "Pipeline state changed from {:?} to {:?} ({:?})", state.old(), state.current(), state.pending());
+                }
+            }
+            _ => {}
+        }
+    }
+    log_to!(logger, Info, [GSTBUS] => "Stopped bus message handler.");
+}
+
+pub async fn setup_hyprland(logger: &Logger) {
+    let output = Command::new("hyprctl")
+        .args([
+            "keyword",
+            "bind",
+            format!("Alt_L,C,exec,{WAYCLIP_TRIGGER_PATH}").as_str(),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("Failed to spawn hyprctl")
+        .wait()
+        .await;
+    if let Ok(output) = output {
+        if output.success() {
+            log_to!(*logger, Info, [HYPR] => "Bind added successfully");
+        } else {
+            log_to!(*logger, Error, [HYPR] => "Bind failed");
+            log_to!(*logger, Error, [HYPR] => "Error: {}", output.to_string());
+        }
+    } else {
+        log_to!(*logger, Error, [HYPR] => "Failed to add bind hyprctl");
+    }
+}
+
+pub async fn cleanup(
+    pipeline: &gstreamer::Element,
+    session: &Session<'_, Screencast<'_>>,
+    settings: Settings,
+    logger: Logger,
+) {
+    send_status_to_gui(
+        settings.gui_socket_path.clone(),
+        String::from("Shuting down..."),
+        &logger,
+    );
+
+    log_to!(logger, Info, [CLEANUP] => "Starting graceful shutdown...");
+
+    if std::env::var("DESKTOP_SESSION") == Ok("hyprland".to_string()) {
+        let output = Command::new("hyprctl")
+            .args(["keyword", "unbind", "Alt_L,C"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("Failed to spawn hyprctl for unbind")
+            .wait()
+            .await;
+        if let Ok(output) = output {
+            if output.success() {
+                log_to!(logger, Info, [HYPR] => "Bind removed successfully");
+            } else {
+                log_to!(logger, Error, [HYPR] => "Failed to remove bind");
+            }
+        }
+    }
+
+    if let Err(e) = pipeline.set_state(gstreamer::State::Null) {
+        log_to!(logger, Error, [GST] => "Failed to set pipeline to null, {:?}", e);
+    } else {
+        log_to!(logger, Info, [GST] => "Pipeline set to null");
+    }
+
+    if let Err(e) = session.close().await {
+        log_to!(logger, Error, [ASH] => "Failed to close screencast session, {}", e);
+    } else {
+        log_to!(logger, Info, [ASH] => "Screencast session closed successfully");
+    }
+
+    if let Err(e) = remove_file(settings.daemon_socket_path.clone()) {
+        log_to!(logger, Warn, [UNIX] => "Failed to remove daemon socket file, {}", e);
+    } else {
+        log_to!(logger, Info, [UNIX] => "Daemon socket file removed");
+    }
+
+    send_status_to_gui(
+        settings.gui_socket_path.clone(),
+        String::from("Inactive"),
+        &logger,
+    );
+    log_to!(logger, Info,[CLEANUP] => "Graceful shutdown complete.");
 }

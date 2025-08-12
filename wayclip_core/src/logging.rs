@@ -80,7 +80,7 @@ impl Logger {
         if let Ok(mut file) = OpenOptions::new().append(true).open(&self.log_path) {
             let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
             let plain_tag = strip_ansi_codes(tag);
-            let file_message = format!("{timestamp} {plain_tag} {level} {message}\n");
+            let file_message = format!("{timestamp} {level} {plain_tag} {message}\n");
 
             if let Err(e) = file.write_all(file_message.as_bytes()) {
                 eprintln!("[LOGGER_ERROR] Failed to write to log file: {e}");
