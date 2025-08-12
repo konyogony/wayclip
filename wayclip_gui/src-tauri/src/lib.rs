@@ -186,7 +186,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             commands::update_settings,
-            commands::pull_settings
+            commands::pull_settings,
+            commands::pull_clips
         ])
         .run(tauri::generate_context!())
         .expect("Failed to run tauri");

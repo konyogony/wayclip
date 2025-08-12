@@ -1,32 +1,53 @@
 import { Outlet } from 'react-router';
+import { cn } from '@/lib/utils';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { routes } from '@/lib/routes';
 import { RxArrowLeft, RxArrowRight, RxCross2 } from '@vertisanpro/react-icons/rx';
 import { Sidebar } from '@/components/sidebar';
 import Toaster from '@/components/toaster';
 import Logo from '../../src-tauri/icons/logo3.png';
+import { createContext, useState, useContext } from 'react';
+
+type SidebarContextType = {
+    isOpen: boolean;
+    toggleSidebar: () => void;
+};
+
+const SidebarContext = createContext<SidebarContextType | undefined>(undefined);
+
+export const useSidebar = () => {
+    const ctx = useContext(SidebarContext);
+    if (!ctx) throw new Error('useSidebar must be used within SidebarProvider');
+    return ctx;
+};
 
 const appWindow = getCurrentWindow();
 
 const MainLayout = () => {
+    const [status, setStatus] = useState('Inactive');
+    const [isOpen, setIsOpen] = useState(true);
+
+    const toggleSidebar = () => setIsOpen((prev) => !prev);
     return (
-        <main className='flex flex-col h-screen'>
+        <main className='flex flex-col h-screen' id='radix-work'>
             <div
-                className='flex-shrink-0 py-2 w-full flex flex-row gap-2 select-none px-2 items-center'
+                className='flex-shrink-0 py-2 w-full flex flex-row gap-2 select-none px-2 items-center relative'
                 data-tauri-drag-region
             >
-                <span className='flex text-[22px] font-bold ml-3 items-center'>
-                    <img src={Logo} alt='Wayclip Logo' className='size-10 text-white' />
-                    Wayclip App
-                </span>
-                <span className='flex flex-row gap-1 items-center'>
-                    <button className='hover:bg-zinc-600/50 size-6 rounded-full flex items-center justify-center'>
-                        <RxArrowLeft size={14} />
-                    </button>
-                    <button className='hover:bg-zinc-600/50 size-6 rounded-full flex items-center justify-center'>
-                        <RxArrowRight size={14} />
-                    </button>
-                </span>
+                <div className='flex flex-row gap-2 ml-4'>
+                    <span className='flex text-[22px] font-bold items-center'>
+                        <img src={Logo} alt='Wayclip Logo' className='size-10 text-white' />
+                        Wayclip App
+                    </span>
+                    <span className='flex flex-row gap-1 items-center ml-8'>
+                        <button className='hover:bg-zinc-600/50 size-6 rounded-full flex items-center justify-center'>
+                            <RxArrowLeft size={14} />
+                        </button>
+                        <button className='hover:bg-zinc-600/50 size-6 rounded-full flex items-center justify-center'>
+                            <RxArrowRight size={14} />
+                        </button>
+                    </span>
+                </div>
                 <button
                     onClick={() => appWindow.close()}
                     className='hover:bg-zinc-600/50 size-6 rounded-full flex items-center justify-center ml-auto'
@@ -36,12 +57,15 @@ const MainLayout = () => {
                     <RxCross2 size={14} />
                 </button>
             </div>
-            <div className='flex flex-row flex-1 overflow-hidden'>
-                <Sidebar routes={routes} />
-                <div className='flex flex-col items-center w-full rounded-tl-2xl bg-zinc-900 overflow-y-auto border-l border-t border-zinc-700'>
-                    <Outlet />
+            <SidebarContext.Provider value={{ isOpen, toggleSidebar }}>
+                <div className='flex flex-row flex-1 overflow-hidden'>
+                    <Sidebar routes={routes} isOpen={isOpen} />
+                    <div className='flex flex-col items-center w-full rounded-tl-2xl bg-[#09090b] overflow-y-auto border-l border-t border-zinc-800'>
+                        <Outlet />
+                    </div>
                 </div>
-            </div>
+            </SidebarContext.Provider>
+
             <Toaster />
         </main>
     );

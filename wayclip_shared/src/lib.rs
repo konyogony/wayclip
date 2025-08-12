@@ -98,6 +98,7 @@ impl Default for Settings {
 }
 
 impl Settings {
+    // TODO: Rewrite to return actual config dir and home dir path, later to be used in GUI
     pub fn config_path() -> PathBuf {
         config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
