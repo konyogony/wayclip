@@ -1,18 +1,24 @@
 use crate::logging::Logger;
+use anyhow::{Context, Result};
 use ashpd::desktop::{screencast::Screencast, Session};
+use chrono::{DateTime, Local};
 use dirs::{config_dir, home_dir};
-use futures::prelude::*;
+use futures::stream::{FuturesUnordered, StreamExt};
 use gstreamer::prelude::{Cast, ElementExt, GstObjectExt};
+use mp4::Mp4Reader;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::fs::remove_file;
-use std::fs::{create_dir_all, write};
-use std::path::PathBuf;
+use std::fmt;
+use std::fs::{create_dir_all, remove_file, write};
+use std::io::Cursor;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
 use tokio::process::Command;
+use tokio::task::JoinHandle;
 
 pub const DAEMON: &str = "\x1b[35m[daemon]\x1b[0m"; // magenta
 pub const UNIX: &str = "\x1b[36m[unix]\x1b[0m"; // cyan
@@ -30,6 +36,43 @@ pub mod logging;
 pub mod ring;
 
 pub const WAYCLIP_TRIGGER_PATH: &str = "/home/kony/Documents/GitHub/wayclip/target/debug/trigger";
+
+#[derive(Serialize)]
+pub struct ClipData {
+    pub name: String,
+    pub path: String,
+    pub length: f64,
+    pub size: u64,
+    pub created_at: DateTime<Local>,
+    pub updated_at: DateTime<Local>,
+    pub tags: Vec<Tag>,
+    pub liked: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Tag {
+    pub name: String,
+    pub color: String,
+}
+
+impl fmt::Display for Tag {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name)
+    }
+}
+
+#[derive(Deserialize, Clone, Debug, Default)]
+pub struct ClipJsonData {
+    #[serde(default)]
+    pub tags: Vec<Tag>,
+    #[serde(default)]
+    pub liked: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Payload {
+    pub message: String,
+}
 
 // Former shared lib related
 
@@ -121,7 +164,7 @@ impl Settings {
     }
 
     pub fn load() -> Self {
-        let path = Self::config_path();
+        let path = Self::config_path().join("wayclip").join("settings.json");
         log!([DEBUG] => "Attempting to read settings from: {:?}", path);
 
         match std::fs::read_to_string(&path) {
@@ -432,4 +475,213 @@ pub async fn cleanup(
         &logger,
     );
     log_to!(logger, Info,[CLEANUP] => "Graceful shutdown complete.");
+}
+
+// Other misc stuff
+
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum Collect {
+    Names,
+    Basic,
+    All,
+}
+
+pub async fn gather_clip_data(level: Collect) -> Result<Vec<ClipData>> {
+    let settings = Settings::load();
+    let clips_dir_path = Settings::home_path().join(&settings.save_path_from_home_string);
+    let json_path = Settings::config_path().join("wayclip").join("data.json");
+
+    if !clips_dir_path.exists() {
+        fs::create_dir_all(&clips_dir_path)
+            .await
+            .with_context(|| format!("Failed to create clip directory at {:?}", &clips_dir_path))?;
+        return Ok(Vec::new());
+    }
+
+    let mut data: Value = if level != Collect::Names {
+        if json_path.exists() {
+            let contents = fs::read_to_string(&json_path)
+                .await
+                .context("Failed to read data.json")?;
+            serde_json::from_str(&contents).unwrap_or_else(|_| json!({}))
+        } else {
+            json!({})
+        }
+    } else {
+        json!({})
+    };
+
+    let mut dir = fs::read_dir(&clips_dir_path)
+        .await
+        .context("Failed to read clips directory")?;
+
+    let mut tasks: FuturesUnordered<JoinHandle<Result<Option<ClipData>>>> = FuturesUnordered::new();
+    let mut data_modified = false;
+
+    while let Some(entry) = dir
+        .next_entry()
+        .await
+        .context("Error reading directory entry")?
+    {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+
+        if !path.is_file() || !name.to_lowercase().ends_with(".mp4") {
+            continue;
+        }
+
+        if level == Collect::Names {
+            tasks.push(tokio::spawn(async move {
+                Ok(Some(ClipData {
+                    name: name.strip_suffix(".mp4").unwrap_or(&name).to_string(),
+                    path: String::new(),
+                    length: 0.0,
+                    size: 0,
+                    created_at: Local::now(),
+                    updated_at: Local::now(),
+                    tags: Vec::new(),
+                    liked: false,
+                }))
+            }));
+            continue;
+        }
+
+        let clip_json_data = if let Some(clip_info) = data.get(&name) {
+            serde_json::from_value(clip_info.clone()).unwrap_or_default()
+        } else {
+            data_modified = true;
+            if let Some(obj) = data.as_object_mut() {
+                obj.insert(name.clone(), json!({ "tags": [], "liked": false }));
+            }
+            ClipJsonData::default()
+        };
+
+        tasks.push(tokio::spawn(async move {
+            let metadata = entry
+                .metadata()
+                .await
+                .with_context(|| format!("Failed to read metadata for {name}"))?;
+
+            if metadata.len() == 0 {
+                return Ok(None);
+            }
+
+            let length = if level == Collect::All {
+                get_video_duration(&path).await.unwrap_or(0.0)
+            } else {
+                0.0
+            };
+
+            let created_at: DateTime<Local> = metadata
+                .created()
+                .map(Into::into)
+                .unwrap_or_else(|_| Local::now());
+            let updated_at: DateTime<Local> = metadata
+                .modified()
+                .map(Into::into)
+                .unwrap_or_else(|_| Local::now());
+
+            Ok(Some(ClipData {
+                name: name.strip_suffix(".mp4").unwrap_or(&name).to_string(),
+                path: path.to_str().unwrap_or_default().to_owned(),
+                length,
+                size: metadata.len(),
+                created_at,
+                updated_at,
+                tags: clip_json_data.tags,
+                liked: clip_json_data.liked,
+            }))
+        }));
+    }
+
+    let mut clips = Vec::new();
+    while let Some(result) = tasks.next().await {
+        match result {
+            Ok(Ok(Some(clip_data))) => clips.push(clip_data),
+            Ok(Ok(None)) => {}
+            Ok(Err(e)) => eprintln!("Error processing a clip: {e:?}"),
+            Err(e) => eprintln!("Error in spawned task: {e:?}"),
+        }
+    }
+
+    if data_modified {
+        let parent = json_path.parent().context("Invalid JSON path")?;
+        if !parent.exists() {
+            fs::create_dir_all(parent)
+                .await
+                .context("Could not create config directory")?;
+        }
+        write_json_data(&json_path, &data).await?;
+    }
+
+    Ok(clips)
+}
+
+pub async fn get_video_duration(path: &Path) -> Result<f64> {
+    let file_bytes = fs::read(path).await?;
+    let size = file_bytes.len() as u64;
+    let reader = Cursor::new(file_bytes);
+    let mp4 = Mp4Reader::read_header(reader, size)?;
+
+    let duration = mp4.moov.mvhd.duration;
+    let timescale = mp4.moov.mvhd.timescale;
+
+    if timescale > 0 {
+        Ok(duration as f64 / timescale as f64)
+    } else {
+        Ok(0.0)
+    }
+}
+
+async fn write_json_data(path: &Path, data: &Value) -> Result<()> {
+    let content = serde_json::to_string_pretty(data)?;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .create(true)
+        .open(path)
+        .await?;
+    file.write_all(content.as_bytes()).await?;
+    Ok(())
+}
+
+// For tauri, thats why path is a str instead of Path
+
+pub async fn check_if_exists(path_str: &str) -> bool {
+    Path::new(path_str).exists()
+}
+
+pub async fn delete_file(path_str: &str) -> Result<(), String> {
+    let path = Path::new(path_str);
+    if let Err(e) = fs::remove_file(path).await {
+        return Err(format!("Failed to delete file: {e}"));
+    }
+    Ok(())
+}
+
+pub async fn update_liked(name: &str, liked: bool) -> Result<()> {
+    let json_path = Settings::config_path().join("wayclip").join("data.json");
+
+    let mut data: Value = if json_path.exists() {
+        let contents = fs::read_to_string(&json_path)
+            .await
+            .context("Failed to read data.json")?;
+        serde_json::from_str(&contents).unwrap_or_else(|_| json!({}))
+    } else {
+        json!({})
+    };
+
+    if let Some(obj) = data.as_object_mut() {
+        if let Some(clip) = obj.get_mut(name) {
+            if let Some(clip_obj) = clip.as_object_mut() {
+                clip_obj.insert("liked".to_string(), json!(liked));
+            }
+        } else {
+            obj.insert(name.to_string(), json!({ "tags": [], "liked": liked }));
+        }
+    }
+
+    write_json_data(&json_path, &data).await?;
+
+    Ok(())
 }

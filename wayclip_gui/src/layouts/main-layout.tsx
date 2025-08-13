@@ -1,11 +1,10 @@
 import { Outlet } from 'react-router';
-import { cn } from '@/lib/utils';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { routes } from '@/lib/routes';
 import { RxArrowLeft, RxArrowRight, RxCross2 } from '@vertisanpro/react-icons/rx';
 import { Sidebar } from '@/components/sidebar';
 import Toaster from '@/components/toaster';
-import Logo from '../../src-tauri/icons/l.png';
+import Logo from '../../src-tauri/icons/logo3.png';
 import { createContext, useState, useContext } from 'react';
 
 type SidebarContextType = {

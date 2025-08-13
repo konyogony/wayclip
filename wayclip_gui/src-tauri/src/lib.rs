@@ -1,54 +1,13 @@
-use crate::types::Payload;
-use mp4::Mp4Reader;
-use serde_json::Value;
-use std::io::{BufRead, BufReader, Cursor};
+use std::io::{BufRead, BufReader};
 use std::os::unix::{fs::FileTypeExt, net::UnixListener};
-use std::path::PathBuf;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
     AppHandle, Emitter, Listener, Manager, Wry,
 };
-use tokio::{fs, io::AsyncWriteExt};
-use wayclip_core::{log, Settings, WAYCLIP_TRIGGER_PATH};
+use wayclip_core::{log, Payload, Settings, WAYCLIP_TRIGGER_PATH};
 
 pub mod commands;
-pub mod types;
-
-pub async fn get_video_duration(path: &PathBuf) -> Result<f64, Box<dyn std::error::Error>> {
-    let file_bytes = fs::read(path).await?;
-    let size = file_bytes.len() as u64;
-    let reader = Cursor::new(file_bytes);
-    let mp4 = Mp4Reader::read_header(reader, size)?;
-
-    let duration = mp4.moov.mvhd.duration;
-    let timescale = mp4.moov.mvhd.timescale;
-
-    if timescale > 0 {
-        Ok(duration as f64 / timescale as f64)
-    } else {
-        Ok(0.0)
-    }
-}
-
-pub async fn write_json_data(path: &PathBuf, data: &Value) -> Result<(), String> {
-    let content =
-        serde_json::to_string_pretty(data).map_err(|e| format!("Failed to serialize JSON: {e}"))?;
-
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .create(true)
-        .open(path)
-        .await
-        .map_err(|e| format!("Failed to open {} for writing: {}", path.display(), e))?;
-
-    file.write_all(content.as_bytes())
-        .await
-        .map_err(|e| format!("Failed to write to {}: {}", path.display(), e))?;
-
-    Ok(())
-}
 
 fn setup_socket_listener(app: AppHandle<Wry>, socket_path: String) {
     std::thread::spawn(move || {
@@ -221,7 +180,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::update_settings,
             commands::pull_settings,
-            commands::pull_clips
+            commands::pull_clips,
+            commands::delete_clip,
+            commands::like_clip,
         ])
         .run(tauri::generate_context!())
         .expect("Failed to run tauri");

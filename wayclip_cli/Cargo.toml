@@ -1,0 +1,9 @@
+[package]
+name = "wayclip_cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+wayclip_core = { path = "../wayclip_core" }
+tokio = { version = "1", features = ["full"] }
