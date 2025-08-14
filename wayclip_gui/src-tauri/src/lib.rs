@@ -5,7 +5,7 @@ use tauri::{
     tray::TrayIconBuilder,
     AppHandle, Emitter, Listener, Manager, Wry,
 };
-use wayclip_core::{log, Payload, Settings, WAYCLIP_TRIGGER_PATH};
+use wayclip_core::{generate_all_previews, log, Payload, Settings, WAYCLIP_TRIGGER_PATH};
 
 pub mod commands;
 
@@ -79,7 +79,14 @@ fn setup_socket_listener(app: AppHandle<Wry>, socket_path: String) {
 pub fn run() {
     let settings = Settings::load();
     tauri::Builder::default()
+        .plugin(tauri_plugin_fs::init())
         .setup(|app| {
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = generate_all_previews().await {
+                    eprintln!("An error occurred during background preview generation: {e}",);
+                }
+            });
+
             let name_item = MenuItem::with_id(app, "name", "Wayclip GUI", false, None::<&str>)?;
             let open_item = MenuItem::with_id(app, "open", "Open Wayclip", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit Wayclip", true, None::<&str>)?;
@@ -183,6 +190,7 @@ pub fn run() {
             commands::pull_clips,
             commands::delete_clip,
             commands::like_clip,
+            commands::rename_clip,
         ])
         .run(tauri::generate_context!())
         .expect("Failed to run tauri");

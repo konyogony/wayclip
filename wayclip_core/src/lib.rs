@@ -10,10 +10,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fmt;
-use std::fs::{create_dir_all, remove_file, write};
-use std::io::Cursor;
+use std::fs::{create_dir_all, remove_file, write, File};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
@@ -37,7 +38,23 @@ pub mod ring;
 
 pub const WAYCLIP_TRIGGER_PATH: &str = "/home/kony/Documents/GitHub/wayclip/target/debug/trigger";
 
-#[derive(Serialize)]
+#[derive(Deserialize)]
+pub struct PullClipsArgs {
+    pub page: usize,
+    pub page_size: usize,
+    pub search_query: Option<String>,
+    // sort_by: Option<String>,
+    // sort_order: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct PaginatedClips {
+    clips: Vec<ClipData>,
+    total_pages: usize,
+    total_clips: usize,
+}
+
+#[derive(Serialize, Clone)]
 pub struct ClipData {
     pub name: String,
     pub path: String,
@@ -95,7 +112,7 @@ macro_rules! log_to {
 #[macro_export]
 macro_rules! log {
     ([$tag:ident] => $($arg:tt)*) => {
-        println!("{} {}", $crate::$tag, format!($($arg)*));
+        println!("{} {}", $crate::$tag, format!($($arg)*))
     };
 }
 
@@ -486,79 +503,98 @@ pub enum Collect {
     All,
 }
 
-pub async fn gather_clip_data(level: Collect) -> Result<Vec<ClipData>> {
+pub async fn gather_clip_data(level: Collect, args: PullClipsArgs) -> Result<PaginatedClips> {
     let settings = Settings::load();
     let clips_dir_path = Settings::home_path().join(&settings.save_path_from_home_string);
     let json_path = Settings::config_path().join("wayclip").join("data.json");
 
     if !clips_dir_path.exists() {
-        fs::create_dir_all(&clips_dir_path)
-            .await
-            .with_context(|| format!("Failed to create clip directory at {:?}", &clips_dir_path))?;
-        return Ok(Vec::new());
+        return Ok(PaginatedClips {
+            clips: Vec::new(),
+            total_pages: 0,
+            total_clips: 0,
+        });
     }
 
-    let mut data: Value = if level != Collect::Names {
-        if json_path.exists() {
-            let contents = fs::read_to_string(&json_path)
-                .await
-                .context("Failed to read data.json")?;
-            serde_json::from_str(&contents).unwrap_or_else(|_| json!({}))
-        } else {
-            json!({})
-        }
+    let data_val: Value = if json_path.exists() {
+        let contents = fs::read_to_string(&json_path)
+            .await
+            .context("Failed to read data.json")?;
+        serde_json::from_str(&contents).unwrap_or_else(|_| json!({}))
     } else {
         json!({})
     };
+    let data = Arc::new(Mutex::new(data_val));
+    let data_modified = Arc::new(Mutex::new(false));
 
     let mut dir = fs::read_dir(&clips_dir_path)
         .await
         .context("Failed to read clips directory")?;
+    let mut all_file_paths = Vec::new();
+    while let Some(entry) = dir.next_entry().await? {
+        let path = entry.path();
+        if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("mp4") {
+            all_file_paths.push(path);
+        }
+    }
+    all_file_paths.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+
+    let filtered_paths = if let Some(query) = args.search_query.as_ref() {
+        let lower_query = query.to_lowercase();
+        all_file_paths
+            .into_iter()
+            .filter(|path| {
+                path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(&lower_query)
+            })
+            .collect()
+    } else {
+        all_file_paths
+    };
+
+    let total_clips = filtered_paths.len();
+    let total_pages = (total_clips as f64 / args.page_size as f64).ceil() as usize;
+    let start_index = (args.page - 1) * args.page_size;
+
+    let paths_for_page = if start_index < total_clips {
+        let end_index = (start_index + args.page_size).min(total_clips);
+        &filtered_paths[start_index..end_index]
+    } else {
+        &[]
+    };
 
     let mut tasks: FuturesUnordered<JoinHandle<Result<Option<ClipData>>>> = FuturesUnordered::new();
-    let mut data_modified = false;
 
-    while let Some(entry) = dir
-        .next_entry()
-        .await
-        .context("Error reading directory entry")?
-    {
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().into_owned();
-
-        if !path.is_file() || !name.to_lowercase().ends_with(".mp4") {
-            continue;
-        }
-
-        if level == Collect::Names {
-            tasks.push(tokio::spawn(async move {
-                Ok(Some(ClipData {
-                    name: name.strip_suffix(".mp4").unwrap_or(&name).to_string(),
-                    path: String::new(),
-                    length: 0.0,
-                    size: 0,
-                    created_at: Local::now(),
-                    updated_at: Local::now(),
-                    tags: Vec::new(),
-                    liked: false,
-                }))
-            }));
-            continue;
-        }
-
-        let clip_json_data = if let Some(clip_info) = data.get(&name) {
-            serde_json::from_value(clip_info.clone()).unwrap_or_default()
-        } else {
-            data_modified = true;
-            if let Some(obj) = data.as_object_mut() {
-                obj.insert(name.clone(), json!({ "tags": [], "liked": false }));
-            }
-            ClipJsonData::default()
-        };
+    for path in paths_for_page {
+        let path_clone = path.clone();
+        let data_clone = Arc::clone(&data);
+        let data_modified_clone = Arc::clone(&data_modified);
 
         tasks.push(tokio::spawn(async move {
-            let metadata = entry
-                .metadata()
+            let name = path_clone
+                .file_name()
+                .context("Failed to get file name")?
+                .to_string_lossy()
+                .into_owned();
+
+            let clip_json_data = {
+                let mut data_guard = data_clone.lock().unwrap();
+                if let Some(clip_info) = data_guard.get(&name) {
+                    serde_json::from_value(clip_info.clone()).unwrap_or_default()
+                } else {
+                    if let Some(obj) = data_guard.as_object_mut() {
+                        obj.insert(name.clone(), json!({ "tags": [], "liked": false }));
+                        let mut modified_guard = data_modified_clone.lock().unwrap();
+                        *modified_guard = true;
+                    }
+                    ClipJsonData::default()
+                }
+            };
+
+            let metadata = fs::metadata(&path_clone)
                 .await
                 .with_context(|| format!("Failed to read metadata for {name}"))?;
 
@@ -567,7 +603,7 @@ pub async fn gather_clip_data(level: Collect) -> Result<Vec<ClipData>> {
             }
 
             let length = if level == Collect::All {
-                get_video_duration(&path).await.unwrap_or(0.0)
+                get_video_duration(&path_clone).await.unwrap_or(0.0)
             } else {
                 0.0
             };
@@ -583,7 +619,7 @@ pub async fn gather_clip_data(level: Collect) -> Result<Vec<ClipData>> {
 
             Ok(Some(ClipData {
                 name: name.strip_suffix(".mp4").unwrap_or(&name).to_string(),
-                path: path.to_str().unwrap_or_default().to_owned(),
+                path: path_clone.to_str().unwrap_or_default().to_owned(),
                 length,
                 size: metadata.len(),
                 created_at,
@@ -594,42 +630,69 @@ pub async fn gather_clip_data(level: Collect) -> Result<Vec<ClipData>> {
         }));
     }
 
-    let mut clips = Vec::new();
+    let mut clips_on_page = Vec::new();
     while let Some(result) = tasks.next().await {
         match result {
-            Ok(Ok(Some(clip_data))) => clips.push(clip_data),
+            Ok(Ok(Some(clip_data))) => clips_on_page.push(clip_data),
             Ok(Ok(None)) => {}
-            Ok(Err(e)) => eprintln!("Error processing a clip: {e:?}"),
-            Err(e) => eprintln!("Error in spawned task: {e:?}"),
+            Ok(Err(e)) => log!([DEBUG] => "Error processing a clip: {:?}", e),
+            Err(e) => log!([DEBUG] => "Error in spawned task: {:?}", e),
         }
     }
 
-    if data_modified {
-        let parent = json_path.parent().context("Invalid JSON path")?;
-        if !parent.exists() {
-            fs::create_dir_all(parent)
-                .await
-                .context("Could not create config directory")?;
+    let was_modified = *data_modified.lock().unwrap();
+    if was_modified {
+        if let Some(parent) = json_path.parent() {
+            if !parent.exists() {
+                fs::create_dir_all(parent)
+                    .await
+                    .context("Could not create config directory")?;
+            }
+            let data_to_write = {
+                let data_guard = data.lock().unwrap();
+                data_guard.clone()
+            };
+            write_json_data(&json_path, &data_to_write).await?;
         }
-        write_json_data(&json_path, &data).await?;
     }
 
-    Ok(clips)
+    Ok(PaginatedClips {
+        clips: clips_on_page,
+        total_clips,
+        total_pages,
+    })
 }
 
 pub async fn get_video_duration(path: &Path) -> Result<f64> {
-    let file_bytes = fs::read(path).await?;
-    let size = file_bytes.len() as u64;
-    let reader = Cursor::new(file_bytes);
-    let mp4 = Mp4Reader::read_header(reader, size)?;
+    let path_buf = path.to_path_buf();
 
-    let duration = mp4.moov.mvhd.duration;
-    let timescale = mp4.moov.mvhd.timescale;
+    let result = tokio::task::spawn_blocking(move || -> Result<f64> {
+        let file = File::open(&path_buf)
+            .with_context(|| format!("Failed to open file for duration check: {path_buf:?}"))?;
+        let size = file.metadata()?.len();
+        let reader = BufReader::new(file);
 
-    if timescale > 0 {
-        Ok(duration as f64 / timescale as f64)
-    } else {
-        Ok(0.0)
+        let mp4 = Mp4Reader::read_header(reader, size)
+            .with_context(|| format!("Failed to read MP4 header for: {path_buf:?}"))?;
+
+        let duration = mp4.moov.mvhd.duration;
+        let timescale = mp4.moov.mvhd.timescale;
+
+        if timescale > 0 {
+            Ok(duration as f64 / timescale as f64)
+        } else {
+            Ok(0.0)
+        }
+    })
+    .await;
+
+    match result {
+        Ok(Ok(duration)) => Ok(duration),
+        Ok(Err(e)) => Err(e),
+        Err(join_error) => Err(anyhow::anyhow!(
+            "Task for get_video_duration panicked: {}",
+            join_error
+        )),
     }
 }
 
@@ -645,7 +708,7 @@ async fn write_json_data(path: &Path, data: &Value) -> Result<()> {
     Ok(())
 }
 
-// For tauri, thats why path is a str instead of Path
+// Functions for tauri, hence why path is a str instead of Path
 
 pub async fn check_if_exists(path_str: &str) -> bool {
     Path::new(path_str).exists()
@@ -682,6 +745,161 @@ pub async fn update_liked(name: &str, liked: bool) -> Result<()> {
     }
 
     write_json_data(&json_path, &data).await?;
+
+    Ok(())
+}
+
+pub async fn generate_preview_clip(video_path: &Path, previews_dir: &Path) -> Result<()> {
+    let file_stem = video_path
+        .file_stem()
+        .context("Could not get file stem from video path")?
+        .to_string_lossy();
+
+    let preview_path = previews_dir.join(format!("{file_stem}.mp4"));
+
+    if preview_path.exists() {
+        return Ok(());
+    }
+
+    tokio::fs::create_dir_all(previews_dir)
+        .await
+        .context("Failed to create preview cache directory")?;
+
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args([
+        "-i",
+        video_path.to_str().context("Invalid video path format")?,
+        "-t",
+        "3",
+        "-an",
+        "-vf",
+        "scale=480:-2",
+        "-crf",
+        "30",
+        "-y",
+        preview_path
+            .to_str()
+            .context("Invalid preview path format")?,
+    ]);
+
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let child = cmd.spawn().context("Failed to spawn ffmpeg process")?;
+
+    let output = child
+        .wait_with_output()
+        .await
+        .context("ffmpeg command failed to complete")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("ffmpeg failed for {video_path:?}: {stderr}");
+    }
+
+    Ok(())
+}
+
+pub async fn generate_all_previews() -> Result<()> {
+    let settings = Settings::load();
+    let clips_dir_path = Settings::home_path().join(&settings.save_path_from_home_string);
+    let previews_path = Settings::config_path().join("wayclip").join("previews");
+
+    if !clips_dir_path.exists() {
+        log!([FFMPEG] => "Preview for {clips_dir_path:?} exists, skipping...");
+
+        return Ok(());
+    }
+
+    let mut dir = fs::read_dir(&clips_dir_path)
+        .await
+        .context("Failed to read clips directory")?;
+
+    let mut tasks = FuturesUnordered::new();
+
+    while let Some(entry) = dir
+        .next_entry()
+        .await
+        .context("Failed to read directory entry")?
+    {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+
+        if !path.is_file() || !name.to_lowercase().ends_with(".mp4") {
+            continue;
+        }
+
+        let previews_path_clone = previews_path.clone();
+        tasks.push(tokio::spawn(async move {
+            if let Err(e) = generate_preview_clip(&path, &previews_path_clone).await {
+                eprintln!("Could not generate preview for '{name}': {e}");
+            }
+        }));
+    }
+
+    while tasks.next().await.is_some() {}
+
+    log!([FFMPEG] => "Background preview generation scan completed.");
+    Ok(())
+}
+
+pub async fn rename_all_entries(path_str: &str, new_name: &str) -> Result<(), String> {
+    let data_json_path = Settings::config_path().join("wayclip").join("data.json");
+    let previews_path = Settings::config_path().join("wayclip").join("previews");
+
+    let original_path = Path::new(path_str);
+    let new_path = original_path.with_file_name(new_name);
+
+    // Main
+    if let Err(e) = fs::rename(&original_path, &new_path).await {
+        let err_msg = format!(
+            "Failed to rename file from '{}' to '{}': {}",
+            original_path.display(),
+            new_path.display(),
+            e
+        );
+        log!([TAURI] => "{}", &err_msg);
+        return Err(err_msg);
+    }
+
+    // Previews
+    if let Some(orig_stem) = original_path.file_stem().and_then(|s| s.to_str()) {
+        let preview_old = previews_path.join(format!("{orig_stem}.mp4"));
+        if fs::try_exists(&preview_old).await.unwrap_or(false) {
+            if let Some(new_stem) = new_path.file_stem().and_then(|s| s.to_str()) {
+                let preview_new = previews_path.join(format!("{new_stem}.mp4"));
+                if let Err(e) = fs::rename(&preview_old, &preview_new).await {
+                    log!([TAURI] => "Failed to rename preview '{}': {}", preview_old.display(), e);
+                }
+            }
+        }
+    }
+
+    // Json
+    if let Ok(json_str) = fs::read_to_string(&data_json_path).await {
+        if let Ok(mut json_val) = serde_json::from_str::<Value>(&json_str) {
+            if let Some(obj) = json_val.as_object_mut() {
+                if let Some(original_filename) = original_path.file_name().and_then(|s| s.to_str())
+                {
+                    if let Some(clip_data) = obj.remove(original_filename) {
+                        if let Some(new_filename) = new_path.file_name().and_then(|s| s.to_str()) {
+                            obj.insert(new_filename.to_string(), clip_data);
+                        }
+                    }
+                }
+            }
+
+            if let Err(e) = fs::write(
+                &data_json_path,
+                serde_json::to_string_pretty(&json_val).unwrap(),
+            )
+            .await
+            {
+                let err_msg = format!("Failed to write updated data.json: {e}");
+                log!([TAURI] => "{}", &err_msg);
+            }
+        }
+    }
 
     Ok(())
 }

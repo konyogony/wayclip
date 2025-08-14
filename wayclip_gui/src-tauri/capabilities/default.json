@@ -9,7 +9,11 @@
         "core:window:allow-start-dragging",
         "core:window:allow-close",
         "opener:default",
-        "opener:allow-reveal-item-in-dir"
+        "opener:allow-reveal-item-in-dir",
+        "fs:default",
+        "fs:allow-app-read",
+        "fs:allow-home-read-recursive",
+        "fs:scope-home-index"
     ]
 }
 

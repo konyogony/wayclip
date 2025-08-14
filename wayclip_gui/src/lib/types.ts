@@ -1,4 +1,6 @@
 import { IconType } from '@vertisanpro/react-icons';
+import { createContext } from 'react';
+import { JSX } from 'react';
 
 export enum groups {
     main = 'Main',
@@ -36,3 +38,10 @@ export interface Setting {
 export interface JsonArray extends Array<JsonValue> {}
 export type JsonValue = string | number | boolean | null | JsonObject | JsonArray;
 export type JsonObject = { [Key in string]?: JsonValue };
+
+export type SidebarContextType = {
+    isOpen: boolean;
+    toggleSidebar: () => void;
+};
+
+export const SidebarContext = createContext<SidebarContextType | undefined>(undefined);

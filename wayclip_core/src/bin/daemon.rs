@@ -20,8 +20,8 @@ use tokio::process::Command;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use wayclip_core::ring::RingBuffer;
 use wayclip_core::{
-    cleanup, handle_bus_messages, log_to, logging::Logger, send_status_to_gui, setup_hyprland,
-    Settings,
+    cleanup, generate_preview_clip, handle_bus_messages, log_to, logging::Logger,
+    send_status_to_gui, setup_hyprland, Settings,
 };
 
 // To get the magic numbers:
@@ -541,7 +541,9 @@ async fn main() {
                                         let gui_path = settings_clone.gui_socket_path.clone();
                                         let ffmpeg_logger_clone = ffmpeg_logger.clone();
                                         tokio::spawn(async move {
-                                            tokio::time::sleep(Duration::from_secs(5)).await;
+                                            if let Err(e) = generate_preview_clip(&output_filename, &Settings::config_path().join("wayclip").join("previews")).await {
+                                                log_to!(&ffmpeg_logger_clone, Error, [FFMPEG] => "Failed to generate preview, {}", e)
+                                            };
                                             send_status_to_gui(gui_path, String::from("Saved!"), &ffmpeg_logger_clone);
                                         });
                                     },

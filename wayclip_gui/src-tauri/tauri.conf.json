@@ -28,6 +28,6 @@
     "bundle": {
         "active": true,
         "targets": "all",
-        "icon": ["icons/logo3.png"]
+        "icon": ["icons/Square89x89Logo.png"]
     }
 }

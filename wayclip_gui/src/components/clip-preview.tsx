@@ -1,4 +1,8 @@
 import { ClipData } from '@/pages/all-clips';
+import { SmartTickerDraggable } from 'react-smart-ticker';
+import { getPreview } from '@/lib/lib';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Input } from '@/components/ui/input';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import {
     Dialog,
@@ -10,6 +14,7 @@ import {
     DialogFooter,
 } from '@/components/animate-ui/headless/dialog';
 import { motion } from 'motion/react';
+import { convertSize, convertTime, convertLength, convertName } from '@/lib/lib';
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -21,48 +26,10 @@ import {
 } from '@/components/animate-ui/radix/dropdown-menu';
 
 import { cn } from '@/lib/utils';
-import { memo, useMemo, useState, useCallback } from 'react';
+import { memo, useMemo, useState, useCallback, useRef, useEffect } from 'react';
 import { FiPlay, FiHeart, FiMoreHorizontal, FiTrash, FiShare2 } from '@vertisanpro/react-icons/fi';
 import { Button } from '@/components/ui/button';
 import { invoke } from '@tauri-apps/api/core';
-
-const convertLength = (seconds: number): string => {
-    const mins = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60);
-    const paddedSecs = secs.toString().padStart(2, '0');
-    return `${mins}:${paddedSecs}`;
-};
-
-const convertTime = (ts: string): string => {
-    const date = new Date(ts);
-
-    const time = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-    const month = date.toLocaleString('en-US', { month: 'long' });
-    const day = date.getDate();
-    const year = date.getFullYear();
-
-    return `${time}, ${month} ${day}, ${year}`;
-};
-
-const convertSize = (bytes: number, decimals = 2): string => {
-    if (bytes === 0) return '0 Bytes';
-
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    const value = bytes / Math.pow(k, i);
-
-    return `${parseFloat(value.toFixed(decimals))} ${sizes[i]}`;
-};
-
-const changeName = (path: string, newName: string) => {
-    console.log(`changed name of ${path} to ${newName}`);
-};
-
-const toggleLike = (name: string, prev: boolean) => {
-    console.log(`changed ${name} from ${prev} to ${!prev}`);
-};
 
 const ClipPreviewComponent = ({
     name,
@@ -75,7 +42,16 @@ const ClipPreviewComponent = ({
     onDelete,
     updated_at,
 }: ClipData & { onDelete: (path: string) => void }) => {
+    const [src, setSrc] = useState<string | null>(null);
+    const [clipName, setClipName] = useState(convertName(name, 'storeToDisplay'));
+    const [clipPath, setClipPath] = useState(path);
+    const renameInputRef = useRef<HTMLInputElement>(null);
+    const videoRef = useRef<HTMLVideoElement>(null);
+
     const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+    const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false);
+    const [isVideoLoaded, setIsVideoLoaded] = useState(false);
+
     const [isLiked, setIsLiked] = useState(liked);
 
     const duration = useMemo(() => {
@@ -98,9 +74,6 @@ const ClipPreviewComponent = ({
         (path: string) => {
             onDelete(path);
             setIsDeleteDialogOpen(false);
-            invoke('delete_clip', { pathStr: path }).catch((e) => {
-                console.error(e);
-            });
         },
         [onDelete],
     );
@@ -116,21 +89,59 @@ const ClipPreviewComponent = ({
         await revealItemInDir(path).catch((e) => console.error(e));
     }, []);
 
+    const handleRename = useCallback((path: string, newName: string) => {
+        const clean = convertName(newName, 'displayToStore');
+        setIsRenameDialogOpen(false);
+        const lastSlashIndex = path.lastIndexOf('/');
+        const dir = lastSlashIndex >= 0 ? path.slice(0, lastSlashIndex + 1) : '';
+        const oldFileName = lastSlashIndex >= 0 ? path.slice(lastSlashIndex + 1) : path;
+        const extMatch = oldFileName.match(/\.[^/.]+$/);
+        const ext = extMatch ? extMatch[0] : '';
+        setClipPath(dir + clean + ext);
+        setClipName(newName);
+        invoke('rename_clip', { pathStr: path, newName: clean }).catch((e) => console.error(e));
+    }, []);
+
+    useEffect(() => {
+        getPreview(path)
+            .then(setSrc)
+            .catch((e) => console.error(e));
+    }, [path]);
+
     return (
         <div className='group flex flex-col rounded-2xl w-full h-fit bg-[#18181b] overflow-clip gap-1 shadow-sm hover:border-zinc-500 transition-all duration-300 border-zinc-800 border'>
-            <div className='relative aspect-video bg-zinc-800'>
-                <div className='absolute inset-0 flex items-center justify-center'>
+            <div className='relative aspect-video bg-zinc-800 rounded-none'>
+                {!isVideoLoaded && <Skeleton className='absolute inset-0 h-full w-full z-10' />}
+                {src && (
+                    <video
+                        ref={videoRef}
+                        src={src}
+                        muted
+                        loop
+                        className={cn('w-full h-full transition-opacity', isVideoLoaded ? 'opacity-100' : 'opacity-0')}
+                        onLoadedData={() => setIsVideoLoaded(true)}
+                        onMouseEnter={() => videoRef.current?.play().catch(() => {})}
+                        onMouseLeave={() => {
+                            if (videoRef.current) {
+                                videoRef.current.pause();
+                                videoRef.current.currentTime = 0;
+                            }
+                        }}
+                    />
+                )}
+
+                <div className='absolute inset-0 flex items-center justify-center z-20'>
                     <div className='w-12 h-12 bg-zinc-700 rounded-full flex items-center justify-center opacity-60 group-hover:opacity-100 hover:scale-105 transition-opacity'>
                         <FiPlay className='w-5 h-5 text-white ml-0.5' />
                     </div>
                 </div>
 
-                <div className='absolute bottom-2 right-2 bg-black/80 text-white text-xs px-2 py-1 rounded'>
+                <div className='absolute bottom-2 right-2 bg-black/80 text-white text-xs px-2 py-1 rounded z-20'>
                     {duration}
                 </div>
 
                 {tags && (
-                    <div className='absolute bottom-2 left-2 flex flex-row gap-1 text-white text-xs'>
+                    <div className='absolute bottom-2 left-2 flex flex-row gap-1 text-white text-xs z-20'>
                         {tags.map((v, i) => (
                             <div
                                 style={{
@@ -147,7 +158,7 @@ const ClipPreviewComponent = ({
 
                 <button
                     onClick={() => handleLike(name, isLiked)}
-                    className='absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity'
+                    className='absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity z-20'
                 >
                     <FiHeart
                         className={cn(
@@ -158,7 +169,7 @@ const ClipPreviewComponent = ({
                 </button>
             </div>
             <div className='w-full px-4  items-center flex flex-row gap-2 mt-2'>
-                <span className='text-lg'>{name}</span>
+                <span className='text-lg'>{clipName}</span>
                 <Button size='sm' variant='ghost' className='ml-auto text-zinc-400 hover:text-white' asChild>
                     <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} className='w-fit'>
                         <FiShare2 className='w-4 h-4' />
@@ -190,8 +201,37 @@ const ClipPreviewComponent = ({
                             <Button variant='outline' onClick={() => setIsDeleteDialogOpen(false)}>
                                 Cancel
                             </Button>
-                            <Button variant='destructive' type='submit' onClick={() => handleDelete(path)}>
+                            <Button variant='destructive' type='submit' onClick={() => handleDelete(clipPath)}>
                                 Delete
+                            </Button>
+                        </DialogFooter>
+                    </DialogPanel>
+                </Dialog>
+
+                <Dialog open={isRenameDialogOpen} onClose={() => setIsRenameDialogOpen(false)}>
+                    <DialogBackdrop />
+
+                    <DialogPanel className='sm:max-w-[425px]'>
+                        <DialogHeader>
+                            <DialogTitle>Rename clip</DialogTitle>
+                            <DialogDescription>The name that will be shown in the Wayclip App.</DialogDescription>
+                        </DialogHeader>
+                        <div className='mt-4'>
+                            <Input ref={renameInputRef} defaultValue={clipName} placeholder='Enter new clip name' />
+                        </div>
+                        <DialogFooter>
+                            <Button variant='outline' onClick={() => setIsRenameDialogOpen(false)}>
+                                Cancel
+                            </Button>
+                            <Button
+                                variant='default'
+                                type='submit'
+                                onClick={() => {
+                                    const value = renameInputRef.current?.value || '';
+                                    handleRename(clipPath, value);
+                                }}
+                            >
+                                Confirm
                             </Button>
                         </DialogFooter>
                     </DialogPanel>
@@ -210,14 +250,18 @@ const ClipPreviewComponent = ({
                             </motion.button>
                         </Button>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent align='start' side='bottom' className='w-56'>
+                    <DropdownMenuContent align='start' side='bottom' className='w-64'>
                         <DropdownMenuLabel>Actions</DropdownMenuLabel>
                         <DropdownMenuGroup>
-                            <DropdownMenuItem>Rename</DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => setIsRenameDialogOpen(true)}>Rename</DropdownMenuItem>
                             <DropdownMenuItem>View</DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => handleLike(name, isLiked)}>Like</DropdownMenuItem>
+                            <DropdownMenuItem
+                                onClick={() => handleLike(convertName(clipName, 'displayToStore'), isLiked)}
+                            >
+                                Like
+                            </DropdownMenuItem>
                             <DropdownMenuItem>Share</DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => handleOpenPath(path)}>Open folder</DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => handleOpenPath(clipPath)}>Open folder</DropdownMenuItem>
                             <DropdownMenuItem variant='destructive' onClick={() => setIsDeleteDialogOpen(true)}>
                                 Delete
                             </DropdownMenuItem>
@@ -230,7 +274,22 @@ const ClipPreviewComponent = ({
                             <DropdownMenuItem disabled>Created: {created}</DropdownMenuItem>
                             <DropdownMenuItem disabled>Modified: {modified}</DropdownMenuItem>
                             <DropdownMenuItem disabled className='truncate'>
-                                Path: {path}
+                                <SmartTickerDraggable
+                                    smart={false}
+                                    isText={true}
+                                    autoFill={false}
+                                    playOnHover={true}
+                                    direction={'left'}
+                                    rtl={false}
+                                    infiniteScrollView={false}
+                                    speed={60}
+                                    delay={0}
+                                    delayBack={0}
+                                    iterations={'infinite'}
+                                    disableSelect={false}
+                                >
+                                    Path: {clipPath.replace(/^\/home\/[^/]+\//, '~/')}
+                                </SmartTickerDraggable>
                             </DropdownMenuItem>
                         </DropdownMenuGroup>
                     </DropdownMenuContent>

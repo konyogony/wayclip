@@ -5,25 +5,12 @@ import { RxArrowLeft, RxArrowRight, RxCross2 } from '@vertisanpro/react-icons/rx
 import { Sidebar } from '@/components/sidebar';
 import Toaster from '@/components/toaster';
 import Logo from '../../src-tauri/icons/logo3.png';
-import { createContext, useState, useContext } from 'react';
-
-type SidebarContextType = {
-    isOpen: boolean;
-    toggleSidebar: () => void;
-};
-
-const SidebarContext = createContext<SidebarContextType | undefined>(undefined);
-
-export const useSidebar = () => {
-    const ctx = useContext(SidebarContext);
-    if (!ctx) throw new Error('useSidebar must be used within SidebarProvider');
-    return ctx;
-};
+import { SidebarContext } from '@/lib/types';
+import { useState } from 'react';
 
 const appWindow = getCurrentWindow();
 
 const MainLayout = () => {
-    const [status, setStatus] = useState('Inactive');
     const [isOpen, setIsOpen] = useState(true);
 
     const toggleSidebar = () => setIsOpen((prev) => !prev);

@@ -1,6 +1,6 @@
 import { cn } from '@/lib/utils';
 import { FiSidebar } from '@vertisanpro/react-icons/fi';
-import { useSidebar } from '@/layouts/main-layout';
+import { useSidebar } from '@/hooks/sidebar';
 
 const Home = () => {
     const { toggleSidebar } = useSidebar();
