@@ -118,4 +118,22 @@ export const defaultSettings: Setting[] = [
         storageKey: 'toggle_notifications',
         category: categories.ui,
     },
+    {
+        storageKey: 'mic_node_name',
+        category: categories.audio,
+        name: 'Input Device',
+        description: 'Select your microphone or input device',
+        defaultValue: '',
+        currentValue: '',
+        type: 'select',
+    },
+    {
+        storageKey: 'bg_node_name',
+        category: categories.audio,
+        name: 'Desktop Audio',
+        description: 'Select your desktop audio device (sink)',
+        defaultValue: '',
+        currentValue: '',
+        type: 'select',
+    },
 ];

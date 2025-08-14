@@ -1,4 +1,5 @@
 use crate::logging::Logger;
+use crate::settings::Settings;
 use anyhow::{Context, Result};
 use ashpd::desktop::{screencast::Screencast, Session};
 use chrono::{DateTime, Local};
@@ -10,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fmt;
-use std::fs::{create_dir_all, remove_file, write, File};
+use std::fs::{remove_file, File};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -35,6 +36,7 @@ pub const DEBUG: &str = "\x1b[93m[debug]\x1b[0m"; // idk
 
 pub mod logging;
 pub mod ring;
+pub mod settings;
 
 pub const WAYCLIP_TRIGGER_PATH: &str = "/home/kony/Documents/GitHub/wayclip/target/debug/trigger";
 
@@ -64,6 +66,13 @@ pub struct ClipData {
     pub updated_at: DateTime<Local>,
     pub tags: Vec<Tag>,
     pub liked: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AudioDevice {
+    pub id: u32,
+    pub name: String,
+    pub node_name: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -129,215 +138,6 @@ pub enum JsonValue {
 
 pub type JsonArray = Vec<JsonValue>;
 pub type JsonObject = HashMap<String, JsonValue>;
-
-#[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
-pub struct Settings {
-    pub clip_name_formatting: String,
-    pub clip_length_s: u64,
-    pub clip_resolution: String,
-    pub clip_fps: u16,
-    pub include_desktop_audio: bool,
-    pub include_mic_audio: bool,
-    pub video_bitrate: u16,
-    pub video_codec: String,
-    pub audio_codec: String,
-    pub save_path_from_home_string: String,
-    pub save_shortcut: String,
-    pub open_gui_shortcut: String,
-    pub toggle_notifications: bool,
-    pub daemon_socket_path: String,
-    pub gui_socket_path: String,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            clip_name_formatting: String::from("%Y-%m-%d_%H-%M-%S"), // done
-            clip_length_s: 120,                                      // done
-            clip_resolution: String::from("1920x1080"),              // needs work
-            clip_fps: 60,                                            // done
-            include_desktop_audio: true,                             // done
-            include_mic_audio: true,                                 // done
-            video_bitrate: 15000,                                    // done
-            video_codec: String::from("h264"),                       // needs work
-            audio_codec: String::from("aac"),                        // needs work
-            save_path_from_home_string: String::from("Videos/wayclip"), // done
-            save_shortcut: String::from("Alt+C"),                    // needs work
-            open_gui_shortcut: String::from("Ctrl+Alt+C"),           // needs work
-            toggle_notifications: true,                              // should remove / remake
-            daemon_socket_path: String::from("/tmp/wayclipd.sock"),  // done
-            gui_socket_path: String::from("/tmp/wayclipg.sock"),     // done
-        }
-    }
-}
-
-impl Settings {
-    pub fn config_path() -> PathBuf {
-        config_dir().unwrap_or_else(|| PathBuf::from("."))
-    }
-
-    pub fn home_path() -> PathBuf {
-        home_dir().unwrap_or_else(|| PathBuf::from("."))
-    }
-
-    pub fn load() -> Self {
-        let path = Self::config_path().join("wayclip").join("settings.json");
-        log!([DEBUG] => "Attempting to read settings from: {:?}", path);
-
-        match std::fs::read_to_string(&path) {
-            Ok(data) => match serde_json::from_str(&data) {
-                Ok(settings) => settings,
-                Err(e) => {
-                    log!([DEBUG] => "FATAL: Could not parse settings.json. The file is invalid. Error: {}", e);
-                    panic!()
-                }
-            },
-            Err(_) => {
-                log!([DEBUG] => "No settings file found at {:?}, creating default settings.", path);
-                Default::default()
-            }
-        }
-    }
-
-    pub fn save(&self) {
-        let path = Self::config_path().join("wayclip").join("settings.json");
-        if let Some(parent) = path.parent() {
-            let _ = create_dir_all(parent);
-        }
-        let _ = write(&path, serde_json::to_string_pretty(self).unwrap());
-    }
-
-    pub fn update_key(key: &str, value: Value) -> Result<(), String> {
-        let mut settings = Self::load();
-        match key {
-            "clip_name_formatting" => {
-                settings.clip_name_formatting = Self::get_str(&value)?;
-            }
-            "clip_length_s" => {
-                settings.clip_length_s = Self::get_u64(&value)?;
-            }
-            "clip_resolution" => {
-                settings.clip_resolution = Self::get_str(&value)?;
-            }
-            "clip_fps" => {
-                settings.clip_fps = Self::get_u16(&value)?;
-            }
-            "include_desktop_audio" => {
-                settings.include_desktop_audio = Self::get_bool(&value)?;
-            }
-            "include_mic_audio" => {
-                settings.include_mic_audio = Self::get_bool(&value)?;
-            }
-            "video_bitrate" => {
-                settings.video_bitrate = Self::get_u16(&value)?;
-            }
-            "video_codec" => {
-                settings.video_codec = Self::get_str(&value)?;
-            }
-            "audio_codec" => {
-                settings.audio_codec = Self::get_str(&value)?;
-            }
-            "save_path_from_home_string" => {
-                settings.save_path_from_home_string = Self::get_str_valid_path(&value)?;
-            }
-            "save_shortcut" => {
-                settings.save_shortcut = Self::get_shortcut(&value)?;
-            }
-            "open_gui_shortcut" => {
-                settings.open_gui_shortcut = Self::get_shortcut(&value)?;
-            }
-            "toggle_notifications" => {
-                settings.toggle_notifications = Self::get_bool(&value)?;
-            }
-            "gui_socket_path" => settings.gui_socket_path = Self::get_str(&value)?,
-            "daemon_socket_path" => settings.daemon_socket_path = Self::get_str(&value)?,
-
-            _ => return Err("Invalid key has been used!".into()),
-        }
-        settings.save();
-        Ok(())
-    }
-
-    fn get_str(value: &Value) -> Result<String, String> {
-        value
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or("expected string".into())
-    }
-
-    fn get_u16(value: &Value) -> Result<u16, String> {
-        value
-            .as_f64()
-            .map(|n| n as u16)
-            .ok_or("expected an u16".into())
-    }
-
-    fn get_u64(value: &Value) -> Result<u64, String> {
-        value
-            .as_f64()
-            .map(|n| n as u64)
-            .ok_or("expected an u64".into())
-    }
-
-    fn get_bool(value: &Value) -> Result<bool, String> {
-        value.as_bool().ok_or("expected a boolean".into())
-    }
-
-    fn get_shortcut(value: &Value) -> Result<String, String> {
-        let raw = value
-            .as_str()
-            .ok_or_else(|| "expected a string for shortcut".to_string())?;
-
-        let cleaned = raw.replace(' ', "");
-        let parts: Vec<&str> = cleaned.split('+').collect();
-
-        if parts.is_empty() {
-            return Err("shortcut cannot be empty".to_string());
-        }
-
-        let allowed_modifiers = ["Ctrl", "Alt", "Shift", "Meta"];
-        let mut has_non_modifier = false;
-
-        for part in &parts {
-            if allowed_modifiers.contains(part) {
-                continue;
-            }
-
-            if part.len() == 1 && part.chars().all(|c| c.is_ascii_alphanumeric()) {
-                if has_non_modifier {
-                    return Err("only one non-modifier key allowed".to_string());
-                }
-                has_non_modifier = true;
-            } else {
-                return Err(format!("invalid key in shortcut: {part}"));
-            }
-        }
-
-        if !has_non_modifier {
-            return Err("missing non-modifier key (like 'A', 'Z', '1', etc)".to_string());
-        }
-
-        Ok(cleaned)
-    }
-
-    fn get_str_valid_path(value: &Value) -> Result<String, String> {
-        let rel_path = value
-            .as_str()
-            .ok_or_else(|| "expected a string for path".to_string())?;
-
-        let clean_path = rel_path.trim_start_matches('/');
-        if clean_path.starts_with("home/") {
-            return Ok(clean_path.to_string());
-        }
-        let full_path = Self::home_path().join(clean_path);
-
-        Ok(full_path.to_string_lossy().into_owned())
-    }
-
-    pub fn to_json() -> serde_json::Value {
-        serde_json::to_value(Self::load()).unwrap()
-    }
-}
 
 // Recording related
 
@@ -504,9 +304,11 @@ pub enum Collect {
 }
 
 pub async fn gather_clip_data(level: Collect, args: PullClipsArgs) -> Result<PaginatedClips> {
-    let settings = Settings::load();
-    let clips_dir_path = Settings::home_path().join(&settings.save_path_from_home_string);
-    let json_path = Settings::config_path().join("wayclip").join("data.json");
+    let settings = Settings::load().await?;
+    let clips_dir_path = settings::Settings::home_path().join(&settings.save_path_from_home_string);
+    let json_path = settings::Settings::config_path()
+        .join("wayclip")
+        .join("data.json");
 
     if !clips_dir_path.exists() {
         return Ok(PaginatedClips {
@@ -801,7 +603,7 @@ pub async fn generate_preview_clip(video_path: &Path, previews_dir: &Path) -> Re
 }
 
 pub async fn generate_all_previews() -> Result<()> {
-    let settings = Settings::load();
+    let settings = Settings::load().await?;
     let clips_dir_path = Settings::home_path().join(&settings.save_path_from_home_string);
     let previews_path = Settings::config_path().join("wayclip").join("previews");
 
@@ -902,4 +704,122 @@ pub async fn rename_all_entries(path_str: &str, new_name: &str) -> Result<(), St
     }
 
     Ok(())
+}
+
+pub async fn get_all_audio_devices() -> Result<Vec<AudioDevice>, String> {
+    let output = Command::new("pw-cli")
+        .args(["ls", "Node"])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run pw-cli: {e}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "pw-cli error: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let mut devices = Vec::new();
+    let mut current_id: Option<u32> = None;
+    let mut current_name: Option<String> = None;
+    let mut current_class: Option<String> = None;
+    let mut current_node_name: Option<String> = None;
+
+    for line in stdout.lines() {
+        let trimmed_line = line.trim();
+
+        if trimmed_line.starts_with("id ") {
+            if let (Some(id), Some(name), Some(class), Some(node_name)) = (
+                current_id,
+                &current_name,
+                &current_class,
+                &current_node_name,
+            ) {
+                if class == "Audio/Source" || class == "Audio/Sink" {
+                    devices.push(AudioDevice {
+                        id,
+                        name: name.clone(),
+                        node_name: node_name.clone(),
+                    });
+                }
+            }
+
+            current_id = None;
+            current_name = None;
+            current_class = None;
+            current_node_name = None;
+
+            if let Some(rest) = trimmed_line.strip_prefix("id ") {
+                if let Some((id_str, _)) = rest.split_once(',') {
+                    if let Ok(id) = id_str.trim().parse::<u32>() {
+                        current_id = Some(id);
+                    }
+                }
+            }
+        } else if trimmed_line.contains("media.class") {
+            if let Some((_, class)) = trimmed_line.split_once('=') {
+                current_class.get_or_insert_with(|| class.trim().trim_matches('"').to_string());
+            }
+        } else if trimmed_line.contains("node.description")
+            || trimmed_line.contains("device.description")
+        {
+            if let Some((_, name)) = trimmed_line.split_once('=') {
+                current_name.get_or_insert_with(|| name.trim().trim_matches('"').to_string());
+            }
+        } else if trimmed_line.contains("node.name") {
+            if let Some((_, node_name)) = trimmed_line.split_once('=') {
+                current_node_name
+                    .get_or_insert_with(|| node_name.trim().trim_matches('"').to_string());
+            }
+        }
+    }
+
+    if let (Some(id), Some(name), Some(class), Some(node_name)) = (
+        current_id,
+        &current_name,
+        &current_class,
+        &current_node_name,
+    ) {
+        if class == "Audio/Source" || class == "Audio/Sink" {
+            devices.push(AudioDevice {
+                id,
+                name: name.clone(),
+                node_name: node_name.clone(),
+            });
+        }
+    }
+
+    Ok(devices)
+}
+
+async fn get_default_audio_devices() -> Result<(Option<String>, Option<String>), String> {
+    let output = Command::new("pactl")
+        .arg("info")
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run pactl: {e}. Is it installed?"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "pactl error: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut default_source = None;
+    let mut default_sink = None;
+
+    for line in stdout.lines() {
+        if let Some(name) = line.strip_prefix("Default Source: ") {
+            default_source = Some(name.trim().to_string());
+        } else if let Some(name) = line.strip_prefix("Default Sink: ") {
+            default_sink = Some(name.trim().to_string());
+        }
+    }
+
+    Ok((default_source, default_sink))
 }

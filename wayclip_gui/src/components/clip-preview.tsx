@@ -14,6 +14,7 @@ import {
     DialogFooter,
 } from '@/components/animate-ui/headless/dialog';
 import { motion } from 'motion/react';
+import { useLazyLoad } from '@/hooks/lazy';
 import { convertSize, convertTime, convertLength, convertName } from '@/lib/lib';
 import {
     DropdownMenu,
@@ -42,11 +43,13 @@ const ClipPreviewComponent = ({
     onDelete,
     updated_at,
 }: ClipData & { onDelete: (path: string) => void }) => {
-    const [src, setSrc] = useState<string | null>(null);
     const [clipName, setClipName] = useState(convertName(name, 'storeToDisplay'));
     const [clipPath, setClipPath] = useState(path);
     const renameInputRef = useRef<HTMLInputElement>(null);
+
+    const [src, setSrc] = useState<string | null>(null);
     const videoRef = useRef<HTMLVideoElement>(null);
+    const [previewRef, isVisible] = useLazyLoad<HTMLDivElement>();
 
     const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
     const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false);
@@ -103,13 +106,18 @@ const ClipPreviewComponent = ({
     }, []);
 
     useEffect(() => {
-        getPreview(path)
-            .then(setSrc)
-            .catch((e) => console.error(e));
-    }, [path]);
+        if (isVisible && !src) {
+            getPreview(path)
+                .then(setSrc)
+                .catch((e) => console.error(`Failed to load preview for ${path}: ${e}`));
+        }
+    }, [isVisible, path, src]);
 
     return (
-        <div className='group flex flex-col rounded-2xl w-full h-fit bg-[#18181b] overflow-clip gap-1 shadow-sm hover:border-zinc-500 transition-all duration-300 border-zinc-800 border'>
+        <div
+            ref={previewRef}
+            className='group flex flex-col rounded-2xl w-full h-fit bg-[#18181b] overflow-clip gap-1 shadow-sm hover:border-zinc-500 transition-all duration-300 border-zinc-800 border'
+        >
             <div className='relative aspect-video bg-zinc-800 rounded-none'>
                 {!isVideoLoaded && <Skeleton className='absolute inset-0 h-full w-full z-10' />}
                 {src && (

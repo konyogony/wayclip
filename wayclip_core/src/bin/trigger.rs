@@ -3,7 +3,7 @@ use std::env;
 use std::io::Cursor;
 use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
-use wayclip_core::{log, Settings};
+use wayclip_core::{log, settings::Settings};
 
 static SOUND_BYTES: &[u8] = include_bytes!("../../assets/save.oga");
 

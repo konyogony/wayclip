@@ -1,12 +1,12 @@
 use serde_json::Value;
 use wayclip_core::{
-    check_if_exists, delete_file, gather_clip_data, log, rename_all_entries, update_liked, Collect,
-    PaginatedClips, PullClipsArgs, Settings,
+    check_if_exists, delete_file, gather_clip_data, get_all_audio_devices, log, rename_all_entries,
+    settings::Settings, update_liked, AudioDevice, Collect, PaginatedClips, PullClipsArgs,
 };
 
-#[tauri::command]
-pub fn update_settings(key: &str, value: Value) -> Result<(), String> {
-    match Settings::update_key(key, value) {
+#[tauri::command(async)]
+pub async fn update_settings(key: &str, value: Value) -> Result<(), String> {
+    match Settings::update_key(key, value).await {
         Ok(_) => Ok(()),
         Err(e) => {
             let err_msg = format!("Failed to update settings: {}", &e);
@@ -16,9 +16,16 @@ pub fn update_settings(key: &str, value: Value) -> Result<(), String> {
     }
 }
 
-#[tauri::command]
-pub fn pull_settings() -> serde_json::Value {
-    Settings::to_json()
+#[tauri::command(async)]
+pub async fn pull_settings() -> Result<serde_json::Value, String> {
+    match Settings::to_json().await {
+        Ok(s) => Ok(s),
+        Err(e) => {
+            let err_msg = format!("Failed to pull settings: {}", &e);
+            log!([TAURI] => "{}", &err_msg);
+            Err(err_msg)
+        }
+    }
 }
 
 #[tauri::command(async)]
@@ -77,4 +84,9 @@ pub async fn rename_clip(path_str: &str, new_name: &str) -> Result<(), String> {
         return Err(err_msg);
     };
     Ok(())
+}
+
+#[tauri::command(async)]
+pub async fn get_all_audio_devices_command() -> Result<Vec<AudioDevice>, String> {
+    get_all_audio_devices().await
 }

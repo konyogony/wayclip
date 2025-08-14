@@ -20,6 +20,7 @@ export enum categories {
     general = 'General',
     ui = 'UI',
     shortcuts = 'Shortcuts',
+    audio = 'Audio',
 }
 
 export interface Setting {
@@ -27,7 +28,7 @@ export interface Setting {
     description?: string;
     tooltip?: string;
     type: 'string' | 'select' | 'boolean' | 'number';
-    options?: string[] | number[];
+    options?: (string | number)[];
     defaultValue: JsonValue;
     currentValue?: JsonValue;
     storageKey: string;
@@ -45,3 +46,9 @@ export type SidebarContextType = {
 };
 
 export const SidebarContext = createContext<SidebarContextType | undefined>(undefined);
+
+export interface AudioDevice {
+    name: string;
+    id: number;
+    node_name: string;
+}

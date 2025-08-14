@@ -70,7 +70,7 @@ async fn main() {
         .expect("Failed to create daemon logger");
 
     log_to!(logger, Info, [DAEMON] => "Starting...");
-    let settings = Settings::load();
+    let settings = Settings::load().await?;
     log_to!(logger, Debug, [DAEMON] => "Settings loaded: {:?}", settings);
 
     env::set_var("GST_DEBUG", "pipewiresrc:5,dmabuf:5");

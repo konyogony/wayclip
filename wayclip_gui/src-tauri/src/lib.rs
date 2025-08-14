@@ -5,7 +5,7 @@ use tauri::{
     tray::TrayIconBuilder,
     AppHandle, Emitter, Listener, Manager, Wry,
 };
-use wayclip_core::{generate_all_previews, log, Payload, Settings, WAYCLIP_TRIGGER_PATH};
+use wayclip_core::{generate_all_previews, log, settings::Settings, Payload, WAYCLIP_TRIGGER_PATH};
 
 pub mod commands;
 
@@ -76,8 +76,8 @@ fn setup_socket_listener(app: AppHandle<Wry>, socket_path: String) {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    let settings = Settings::load();
+pub async fn run() {
+    let settings = Settings::load().await.unwrap();
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
@@ -191,6 +191,7 @@ pub fn run() {
             commands::delete_clip,
             commands::like_clip,
             commands::rename_clip,
+            commands::get_all_audio_devices_command
         ])
         .run(tauri::generate_context!())
         .expect("Failed to run tauri");
