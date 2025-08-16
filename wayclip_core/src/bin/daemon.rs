@@ -6,6 +6,7 @@ use gst::prelude::{Cast, ElementExt, GstBinExt, ObjectExt};
 use gstreamer::{self as gst};
 use gstreamer_app::AppSink;
 use std::env;
+use std::error::Error;
 use std::fs::{create_dir_all, metadata, remove_file};
 use std::os::unix::io::AsRawFd;
 use std::process::{exit, Stdio};
@@ -18,50 +19,15 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::process::Command;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
-use wayclip_core::ring::RingBuffer;
 use wayclip_core::{
-    cleanup, generate_preview_clip, handle_bus_messages, log_to, logging::Logger,
-    send_status_to_gui, setup_hyprland, Settings,
+    cleanup, generate_preview_clip, get_pipewire_node_id, handle_bus_messages, log_to,
+    logging::Logger, ring::RingBuffer, send_status_to_gui, settings::Settings, setup_hyprland,
 };
-
-// To get the magic numbers:
-// pw-cli ls Node
-
-// Need to move to settings
-const DESKTOP_AUDIO_DEVICE_ID: &str = "45";
-const DESKTOP_AUDIO_VOLUME: u32 = 75;
-// id 34, type PipeWire:Interface:Node/3
-// 		object.serial = "62"
-// 		object.path = "alsa:acp:Wireless:3:playback"
-// 		factory.id = "19"
-// 		client.id = "46"
-// 		device.id = "49"
-// 		priority.session = "1009"
-// 		priority.driver = "1009"
-// 		node.description = "HyperX Cloud Alpha Wireless Analog Stereo"
-// 		node.name = "alsa_output.usb-HP__Inc_HyperX_Cloud_Alpha_Wireless_00000001-00.analog-stereo"
-// 		node.nick = "HyperX Cloud Alpha Wireless"
-// 		media.class = "Audio/Sink"
-
-const MIC_AUDIO_DEVICE_ID: &str = "42";
-const MIC_AUDIO_VOLUME: u32 = 100;
-// id 44, type PipeWire:Interface:Node/3
-// 	object.serial = "65"
-// 	object.path = "alsa:acp:Quadcast:0:capture"
-// 	factory.id = "19"
-// 	client.id = "46"
-// 	device.id = "50"
-// 	priority.session = "2009"
-// 	priority.driver = "2009"
-// 	node.description = "HyperX QuadCast Analog Stereo"
-// 	node.name = "alsa_input.usb-Kingston_HyperX_Quadcast_4110-00.analog-stereo"
-// 	node.nick = "HyperX Quadcast"
-// 	media.class = "Audio/Source"
 
 const SAVE_COOLDOWN: Duration = Duration::from_secs(2);
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn Error>> {
     let log_dir = "/tmp/wayclip";
     create_dir_all(log_dir).expect("Failed to create log directory");
     let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
@@ -73,7 +39,10 @@ async fn main() {
     let settings = Settings::load().await?;
     log_to!(logger, Debug, [DAEMON] => "Settings loaded: {:?}", settings);
 
-    env::set_var("GST_DEBUG", "pipewiresrc:5,dmabuf:5");
+    env::set_var(
+        "GST_DEBUG",
+        "pipewiresrc:4,audiomixer:4,audioconvert:4,audioresample:4,opusenc:4,matroskamux:4,3",
+    );
     gst::init().expect("Failed to init gstreamer");
     if metadata(&settings.daemon_socket_path).is_ok() {
         if let Err(e) = remove_file(&settings.daemon_socket_path) {
@@ -143,7 +112,7 @@ async fn main() {
     let is_saving = Arc::new(AtomicBool::new(false));
 
     let mut pipeline_parts = Vec::new();
-    let has_audio = settings.include_desktop_audio || settings.include_mic_audio;
+    let has_audio = settings.include_bg_audio || settings.include_mic_audio;
     pipeline_parts.push("matroskamux name=mux ! appsink name=sink".to_string());
 
     // Mine: Little outdated
@@ -213,11 +182,41 @@ async fn main() {
             .to_string(),
     );
 
+    let (width, height) = {
+        let parts: Vec<&str> = settings.clip_resolution.split('x').collect();
+        if parts.len() == 2 {
+            let w = parts[0].parse::<i32>().unwrap_or(1920);
+            let h = parts[1].parse::<i32>().unwrap_or(1080);
+            (w, h)
+        } else {
+            log_to!(logger, Warn, [DAEMON] => "Invalid video_resolution format '{}'. Using default 1920x1080.", settings.clip_resolution);
+            (1920, 1080)
+        }
+    };
+
+    log_to!(logger, Info, [GST] => "Setting output resolution to {}x{}", width, height);
+
+    // Before resolution update
+    // pipeline_parts.push(format!(
+    //     "pipewiresrc do-timestamp=true fd={fd} path={path} ! \
+    //     queue max-size-buffers=8 leaky=downstream ! \
+    //     videoconvert ! videoscale ! \
+    //     video/x-raw,format=(string)NV12 ! \
+    //     videorate ! video/x-raw,framerate={fps}/1 ! \
+    //     queue max-size-buffers=8 leaky=downstream ! \
+    //     cudaupload ! nvh264enc bitrate={bitrate} ! \
+    //     h264parse ! queue ! mux.video_0",
+    //     fd = pipewire_fd.as_raw_fd(),
+    //     path = node_id,
+    //     fps = settings.clip_fps,
+    //     bitrate = settings.video_bitrate,
+    // ));
+
     pipeline_parts.push(format!(
         "pipewiresrc do-timestamp=true fd={fd} path={path} ! \
         queue max-size-buffers=8 leaky=downstream ! \
         videoconvert ! videoscale ! \
-        video/x-raw,format=(string)NV12 ! \
+        video/x-raw,width={width},height={height},format=(string)NV12 ! \
         videorate ! video/x-raw,framerate={fps}/1 ! \
         queue max-size-buffers=8 leaky=downstream ! \
         cudaupload ! nvh264enc bitrate={bitrate} ! \
@@ -225,6 +224,8 @@ async fn main() {
         fd = pipewire_fd.as_raw_fd(),
         path = node_id,
         fps = settings.clip_fps,
+        width = width,
+        height = height,
         bitrate = settings.video_bitrate,
     ));
 
@@ -232,28 +233,52 @@ async fn main() {
         pipeline_parts
             .push("audiomixer name=mix ! opusenc ! opusparse ! queue ! mux.audio_0".to_string());
 
-        if settings.include_desktop_audio {
+        if settings.include_bg_audio {
             log_to!(logger, Info,
                 [GST] => "Enabling DESKTOP audio recording for device {}",
-                DESKTOP_AUDIO_DEVICE_ID
+                settings.bg_node_name
             );
-            pipeline_parts.push(format!(
-                "pipewiresrc do-timestamp=true path={DESKTOP_AUDIO_DEVICE_ID} ! \
-         audio/x-raw,rate=48000,channels=2 ! \
-         queue max-size-buffers=8 ! audioconvert ! audioresample ! mix.sink_0",
-            ));
+            match get_pipewire_node_id(&settings.bg_node_name, &logger).await {
+                Ok(bg_node_id) => {
+                    // pipeline_parts.push(format!(
+                    //     "pipewiresrc do-timestamp=true path={bg_node_id} ! \
+                    //  audio/x-raw,rate=48000,channels=2 ! \
+                    //  queue max-size-buffers=8 ! audioconvert ! audioresample ! mix.sink_0",
+                    // ));
+                    pipeline_parts.push(format!(
+                        "pipewiresrc do-timestamp=true path={bg_node_id} ! \
+                     audio/x-raw,rate=48000,channels=2 ! \
+                     queue max-size-buffers=8 ! audioconvert ! audioresample ! mix.sink_0",
+                    ));
+                }
+                Err(e) => {
+                    log_to!(logger, Error, [GST] => "Could not find monitor source '{}': {}. Background audio will not be recorded.", settings.bg_node_name, e);
+                }
+            }
         }
 
         if settings.include_mic_audio {
             log_to!(logger, Info,
                 [GST] => "Enabling MICROPHONE audio recording for device {}",
-                MIC_AUDIO_DEVICE_ID
+                settings.mic_node_name
             );
-            pipeline_parts.push(format!(
-                "pipewiresrc do-timestamp=true path={MIC_AUDIO_DEVICE_ID} ! \
-         audio/x-raw,rate=48000,channels=2 ! \
-         queue max-size-buffers=8 ! audioconvert ! audioresample ! mix.sink_1",
-            ));
+            match get_pipewire_node_id(&settings.mic_node_name, &logger).await {
+                Ok(mic_node_id) => {
+                    // pipeline_parts.push(format!(
+                    //     "pipewiresrc do-timestamp=true path={mic_node_id} ! \
+                    //  audio/x-raw,rate=48000,channels=2 ! \
+                    //  queue max-size-buffers=8 ! audioconvert ! audioresample ! mix.sink_1",
+                    // ));
+                    pipeline_parts.push(format!(
+                        "pipewiresrc do-timestamp=true path={mic_node_id} ! \
+                     audio/x-raw,rate=48000,channels=2 ! \
+                     queue max-size-buffers=8 ! audioconvert ! audioresample ! mix.sink_1",
+                    ));
+                }
+                Err(e) => {
+                    log_to!(logger, Error, [GST] => "Could not find microphone source '{}': {}. Mic audio will not be recorded.", settings.mic_node_name, e);
+                }
+            }
         }
     }
     // pipeline_parts.push(
@@ -335,8 +360,8 @@ async fn main() {
         .dynamic_cast::<gst::Bin>()
         .expect("Pipeline should be a Bin");
 
-    if settings.include_desktop_audio {
-        let desktop_vol = DESKTOP_AUDIO_VOLUME as f64 / 100.0;
+    if settings.include_bg_audio {
+        let desktop_vol = settings.bg_volume as f64 / 100.0;
         let sink_0_pad = pipeline_bin
             .by_name("mix")
             .expect("Failed to get mixer")
@@ -347,7 +372,7 @@ async fn main() {
     }
 
     if settings.include_mic_audio {
-        let mic_vol = MIC_AUDIO_VOLUME as f64 / 100.0;
+        let mic_vol = settings.mic_volume as f64 / 100.0;
         let sink_1_pad = pipeline_bin
             .by_name("mix")
             .expect("Failed to get mixer")
@@ -579,4 +604,5 @@ async fn main() {
     }
 
     cleanup(&pipeline, &session, settings, logger).await;
+    Ok(())
 }

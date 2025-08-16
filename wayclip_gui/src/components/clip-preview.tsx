@@ -65,6 +65,13 @@ const ClipPreviewComponent = ({
         return convertTime(created_at);
     }, []);
 
+    const isNew = useMemo(() => {
+        const createdDate = new Date(created_at);
+        const now = new Date();
+        const diffMs = now.getTime() - createdDate.getTime();
+        return diffMs < 24 * 60 * 60 * 1000;
+    }, [created_at]);
+
     const modified = useMemo(() => {
         return convertTime(updated_at);
     }, []);
@@ -137,6 +144,8 @@ const ClipPreviewComponent = ({
                         }}
                     />
                 )}
+
+                {isNew && <div className='rounded-2xl bg-red-500 px-2 text-xs absolute top-2 left-2 z-10'>New!</div>}
 
                 <div className='absolute inset-0 flex items-center justify-center z-20'>
                     <div className='w-12 h-12 bg-zinc-700 rounded-full flex items-center justify-center opacity-60 group-hover:opacity-100 hover:scale-105 transition-opacity'>
@@ -281,7 +290,7 @@ const ClipPreviewComponent = ({
                             <DropdownMenuItem disabled>Duration: {duration}</DropdownMenuItem>
                             <DropdownMenuItem disabled>Created: {created}</DropdownMenuItem>
                             <DropdownMenuItem disabled>Modified: {modified}</DropdownMenuItem>
-                            <DropdownMenuItem disabled className='truncate'>
+                            {/* <DropdownMenuItem disabled className='truncate'>
                                 <SmartTickerDraggable
                                     smart={false}
                                     isText={true}
@@ -299,13 +308,14 @@ const ClipPreviewComponent = ({
                                     Path: {clipPath.replace(/^\/home\/[^/]+\//, '~/')}
                                 </SmartTickerDraggable>
                             </DropdownMenuItem>
+                            */}
                         </DropdownMenuGroup>
                     </DropdownMenuContent>
                 </DropdownMenu>
             </div>
             <div className='flex flex-row gap-2 mt-2 w-full text-sm text-zinc-400 px-4 mb-3'>
                 <span>{created}</span>
-                <span className='ml-auto'>{fileSize}</span>
+                <span className='ml-auto font-mono'>{fileSize}</span>
             </div>
         </div>
     );

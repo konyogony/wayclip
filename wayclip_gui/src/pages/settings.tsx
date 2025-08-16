@@ -31,11 +31,12 @@ const Settings = () => {
     const handleChange = (key: string, value: JsonValue) => {
         const setting = currentSettings.find((s) => s.storageKey === key);
 
-        if (setting && setting.category === categories.audio && typeof value === 'string') {
-            const audioDevice = audioDevices.find((d) => d.name === value);
-            if (audioDevice) {
-                setPendingChanges((prev) => ({ ...prev, [key]: audioDevice.node_name }));
-            }
+        if (setting && typeof setting.defaultValue === 'number') {
+            const numericValue = Number(value);
+            setPendingChanges((prev) => ({
+                ...prev,
+                [key]: isNaN(numericValue) ? getSettingValue(setting) : numericValue,
+            }));
         } else {
             setPendingChanges((prev) => ({ ...prev, [key]: value }));
         }
@@ -86,16 +87,7 @@ const Settings = () => {
         setIsRefreshing(true);
         try {
             const devices = await invoke<AudioDevice[]>('get_all_audio_devices_command');
-            const seenNames = new Set<string>();
-            const uniqueDevices = devices.filter((device) => {
-                if (seenNames.has(device.name)) {
-                    return false;
-                } else {
-                    seenNames.add(device.name);
-                    return true;
-                }
-            });
-            setAudioDevices(uniqueDevices);
+            setAudioDevices(devices);
             console.log(devices);
         } catch (error) {
             console.error('Failed to refresh audio devices:', error);
@@ -114,16 +106,18 @@ const Settings = () => {
     const getSettingValue = (setting: Setting) => {
         const rawValue = pendingChanges[setting.storageKey] ?? setting.currentValue ?? setting.defaultValue;
 
-        if (setting.category === categories.audio && typeof rawValue === 'string') {
-            const audioDevice = audioDevices.find((d) => d.node_name === rawValue);
-            return audioDevice ? audioDevice.name : '';
+        if (setting.category === categories.audio && setting.type === 'select') {
+            const isValidDevice = audioDevices.some((device) => device.node_name === rawValue);
+            return isValidDevice ? rawValue : '';
         }
+
         return rawValue;
     };
 
     useEffect(() => {
         const pullSettings = async () => {
             try {
+                await refreshAudioDevices();
                 const fetchedValues: JsonObject = await invoke('pull_settings');
                 const newSettings = defaultSettings.map((setting) => {
                     const pulledValue = fetchedValues[setting.storageKey];
@@ -136,17 +130,17 @@ const Settings = () => {
             } catch (error) {
                 console.error('Failed to pull settings:', error);
                 showToast('Failed to load settings.', 'error');
+            } finally {
+                showToast('Settings loaded.');
             }
         };
 
         pullSettings();
-        refreshAudioDevices();
-        showToast('Settings loaded.');
     }, []);
 
     return (
-        <div className='gap-y-8 w-full pb-8'>
-            <div className='flex items-center gap-3 w-full border-b border-zinc-800 py-4 px-10'>
+        <div className='gap-y-8 w-full pb-8 flex flex-col'>
+            <div className='flex items-center gap-3 w-full border-b border-zinc-800 py-4 px-10 flex-shrink-0'>
                 <button
                     className={cn(
                         'flex flex-row items-center cursor-pointer gap-2 w-fit h-fit justify-center transition-all duration-200 ease-in-out rounded-lg p-2 z-30 hover:bg-zinc-800/50',
@@ -156,7 +150,7 @@ const Settings = () => {
                     <FiSidebar size={18} />
                 </button>
                 <div className='w-[1px] h-8 mr-1 bg-zinc-800' />
-                <h1 className='text-2xl font-bold'>Home</h1>
+                <h1 className='text-2xl font-bold'>Settings</h1>
             </div>
 
             {Object.values(categories).map((categoryName) => {
@@ -165,7 +159,7 @@ const Settings = () => {
                 const categorySettings = currentSettings.filter((setting) => setting.category === categoryName);
 
                 return (
-                    <div key={categoryName} className='gap-y-4 pt-8 max-w-2xl mx-auto'>
+                    <div key={categoryName} className='gap-y-4 pt-8 w-2xl mx-auto'>
                         <div className='flex items-center justify-between'>
                             <div className='flex items-center gap-3'>
                                 <h2 className='text-lg font-semibold text-white'>{categoryName}</h2>
@@ -194,7 +188,13 @@ const Settings = () => {
                                             {...setting}
                                             options={
                                                 setting.type === 'select' && setting.category === categories.audio
-                                                    ? audioDevices.map((d) => d.name)
+                                                    ? setting.storageKey === 'mic_node_name'
+                                                        ? audioDevices.filter((d) =>
+                                                              d.node_name.startsWith('alsa_input'),
+                                                          )
+                                                        : audioDevices.filter((d) =>
+                                                              d.node_name.startsWith('alsa_output'),
+                                                          )
                                                     : setting.options
                                             }
                                             value={getSettingValue(setting)}
@@ -204,7 +204,10 @@ const Settings = () => {
                                     {categoryName === categories.audio && (
                                         <div className='flex justify-end pt-4'>
                                             <Button
-                                                onClick={refreshAudioDevices}
+                                                onClick={() => {
+                                                    refreshAudioDevices();
+                                                    toast.success('Refreshed audio devices');
+                                                }}
                                                 disabled={isRefreshing}
                                                 size='sm'
                                                 variant='outline'

@@ -1,13 +1,21 @@
 use std::io::{BufRead, BufReader};
 use std::os::unix::{fs::FileTypeExt, net::UnixListener};
+use std::sync::Mutex;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
     AppHandle, Emitter, Listener, Manager, Wry,
 };
-use wayclip_core::{generate_all_previews, log, settings::Settings, Payload, WAYCLIP_TRIGGER_PATH};
+use wayclip_core::{
+    gather_clip_data, generate_all_previews, log, settings::Settings, ClipData, Collect, Payload,
+    PullClipsArgs, WAYCLIP_TRIGGER_PATH,
+};
 
 pub mod commands;
+
+pub struct AppState {
+    pub clips: Mutex<Vec<ClipData>>,
+}
 
 fn setup_socket_listener(app: AppHandle<Wry>, socket_path: String) {
     std::thread::spawn(move || {
@@ -81,6 +89,29 @@ pub async fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
+            app.manage(AppState {
+                clips: Mutex::new(Vec::new()),
+            });
+
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let initial_clips_result = gather_clip_data(
+                    Collect::All,
+                    PullClipsArgs {
+                        page: 1,
+                        page_size: 10000,
+                        search_query: None,
+                    },
+                )
+                .await;
+
+                if let Ok(paginated_clips) = initial_clips_result {
+                    let state = app_handle.state::<AppState>();
+                    let mut clips = state.clips.lock().unwrap();
+                    *clips = paginated_clips.clips;
+                }
+            });
+
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = generate_all_previews().await {
                     eprintln!("An error occurred during background preview generation: {e}",);

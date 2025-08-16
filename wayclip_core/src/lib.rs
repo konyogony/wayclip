@@ -10,6 +10,7 @@ use mp4::Mp4Reader;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::error::Error;
 use std::fmt;
 use std::fs::{remove_file, File};
 use std::io::BufReader;
@@ -51,9 +52,9 @@ pub struct PullClipsArgs {
 
 #[derive(Serialize, Clone)]
 pub struct PaginatedClips {
-    clips: Vec<ClipData>,
-    total_pages: usize,
-    total_clips: usize,
+    pub clips: Vec<ClipData>,
+    pub total_pages: usize,
+    pub total_clips: usize,
 }
 
 #[derive(Serialize, Clone)]
@@ -822,4 +823,51 @@ async fn get_default_audio_devices() -> Result<(Option<String>, Option<String>),
     }
 
     Ok((default_source, default_sink))
+}
+
+pub async fn get_pipewire_node_id(
+    node_name: &String,
+    logger: &Logger,
+) -> Result<u32, Box<dyn Error>> {
+    let output = Command::new("pw-cli")
+        .arg("ls")
+        .arg("Node")
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let err_msg = format!("'pw-cli ls Node' command failed: {stderr}");
+        log_to!(logger, Error, [DAEMON] => "{}", err_msg);
+        return Err(err_msg.into());
+    }
+
+    let stdout = String::from_utf8(output.stdout)?;
+
+    let mut current_id: Option<u32> = None;
+    for line in stdout.lines() {
+        let trimmed_line = line.trim();
+
+        if trimmed_line.starts_with("id ") {
+            current_id = trimmed_line
+                .split(|c: char| c.is_whitespace() || c == ',')
+                .nth(1)
+                .and_then(|id_str| id_str.parse::<u32>().ok());
+        } else if let Some(id) = current_id {
+            if trimmed_line.starts_with("node.name =") {
+                let name_value = trimmed_line.split_once("=").map(|x| x.1);
+
+                if let Some(name) = name_value {
+                    let extracted_name = name.trim().trim_matches('"');
+                    if extracted_name == node_name {
+                        return Ok(id);
+                    }
+                }
+            }
+        }
+    }
+
+    let err_msg = format!("PipeWire node with name '{node_name}' not found");
+    log_to!(logger, Error, [DAEMON] => "{}", err_msg);
+    Err(err_msg.into())
 }

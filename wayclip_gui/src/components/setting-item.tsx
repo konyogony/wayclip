@@ -1,4 +1,7 @@
 import type { Setting, JsonValue } from '@/lib/types';
+import { Slider, SliderValue } from '@/components/ui/slider';
+import { cn } from '@/lib/utils';
+import { categories } from '@/lib/types';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/animate-ui/base/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -18,6 +21,7 @@ export const SettingsItem = ({
     defaultValue,
     storageKey,
     value,
+    category,
     onChange,
 }: SettingsItemProps) => {
     const renderInput = () => {
@@ -35,25 +39,29 @@ export const SettingsItem = ({
                 );
 
             case 'select':
+                const normalizedOptions = options?.map((opt) =>
+                    typeof opt === 'string' || typeof opt === 'number'
+                        ? { label: String(opt), value: String(opt) }
+                        : { label: opt.name, value: opt.node_name },
+                );
                 return (
-                    <Select
-                        value={String(value)}
-                        onValueChange={(newValue) => {
-                            const parsedValue = options?.includes(Number(newValue)) ? Number(newValue) : newValue;
-                            onChange(storageKey, parsedValue);
-                        }}
-                    >
-                        <SelectTrigger className='w-48 bg-zinc-800 border-zinc-700 text-white focus:border-zinc-600'>
-                            <SelectValue />
+                    <Select value={String(value)} onValueChange={(newValue) => onChange(storageKey, newValue)}>
+                        <SelectTrigger
+                            className={cn(
+                                'bg-zinc-800 border-zinc-700 text-white focus:border-zinc-600',
+                                category === categories.audio ? 'w-64' : 'w-48',
+                            )}
+                        >
+                            <SelectValue placeholder='Select a device...' />
                         </SelectTrigger>
                         <SelectContent className='bg-zinc-800 border-zinc-700'>
-                            {options?.map((option) => (
+                            {normalizedOptions?.map((option) => (
                                 <SelectItem
-                                    key={String(option)}
-                                    value={String(option)}
+                                    key={option.value}
+                                    value={option.value}
                                     className='text-white hover:bg-zinc-700 focus:bg-zinc-700'
                                 >
-                                    {String(option)}
+                                    {option.label}
                                 </SelectItem>
                             ))}
                         </SelectContent>
@@ -73,6 +81,26 @@ export const SettingsItem = ({
                         className='w-64 bg-zinc-800 border-zinc-700 text-white placeholder:text-zinc-400 focus:border-zinc-600'
                         placeholder={String(defaultValue)}
                     />
+                );
+
+            case 'slider':
+                return (
+                    <Slider
+                        className='w-48'
+                        defaultValue={Number(defaultValue)}
+                        onValueChange={(val) => {
+                            if (typeof val === 'number') {
+                                onChange(storageKey, val);
+                            }
+                        }}
+                        min={0}
+                        max={100}
+                        step={1}
+                    >
+                        <div className='flex justify-between'>
+                            <SliderValue />
+                        </div>
+                    </Slider>
                 );
 
             default:

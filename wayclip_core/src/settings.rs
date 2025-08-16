@@ -13,8 +13,6 @@ pub struct Settings {
     pub clip_length_s: u64,
     pub clip_resolution: String,
     pub clip_fps: u16,
-    pub include_desktop_audio: bool,
-    pub include_mic_audio: bool,
     pub video_bitrate: u16,
     pub video_codec: String,
     pub audio_codec: String,
@@ -26,6 +24,10 @@ pub struct Settings {
     pub gui_socket_path: String,
     pub mic_node_name: String,
     pub bg_node_name: String,
+    pub mic_volume: u8,
+    pub bg_volume: u8,
+    pub include_mic_audio: bool,
+    pub include_bg_audio: bool,
 }
 
 impl Settings {
@@ -38,8 +40,6 @@ impl Settings {
             clip_length_s: 120,
             clip_resolution: String::from("1920x1080"),
             clip_fps: 60,
-            include_desktop_audio: true,
-            include_mic_audio: true,
             video_bitrate: 15000,
             video_codec: String::from("h264"),
             audio_codec: String::from("aac"),
@@ -49,6 +49,10 @@ impl Settings {
             toggle_notifications: true,
             daemon_socket_path: String::from("/tmp/wayclipd.sock"),
             gui_socket_path: String::from("/tmp/wayclipg.sock"),
+            mic_volume: 100,
+            bg_volume: 75,
+            include_mic_audio: true,
+            include_bg_audio: true,
         })
     }
 
@@ -69,21 +73,46 @@ impl Settings {
                 .await
                 .context("Failed to read existing settings file")?;
 
-            match serde_json::from_str(&data) {
-                Ok(settings) => {
-                    log!([DEBUG] => "Settings loaded successfully.");
-                    return Ok(settings);
+            match serde_json::from_str::<Value>(&data) {
+                Ok(saved_value) => {
+                    log!([DEBUG] => "Successfully parsed settings file. Merging with defaults.");
+
+                    let default_settings = Self::new().await?;
+                    let mut default_value = serde_json::to_value(default_settings)?;
+                    let default_map = default_value.as_object_mut().unwrap();
+
+                    let saved_map = saved_value
+                        .as_object()
+                        .context("Settings JSON is not an object")?;
+
+                    for (key, value) in saved_map {
+                        default_map.insert(key.clone(), value.clone());
+                    }
+
+                    for key in saved_map.keys() {
+                        if !default_map.contains_key(key) {
+                            log!([TAURI] => "WARN: Unknown key '{}' found in settings.json. It will be ignored.", key);
+                        }
+                    }
+
+                    let final_settings: Settings = serde_json::from_value(default_value.clone())
+                        .context("Failed to create final settings from merged data")?;
+
+                    final_settings
+                        .save()
+                        .await
+                        .context("Failed to save merged settings")?;
+
+                    return Ok(final_settings);
                 }
                 Err(e) => {
-                    log!([TAURI] => "WARN: Settings file is corrupt, creating a new one. Error: {}", e);
+                    log!([TAURI] => "WARN: Settings file is corrupt or invalid, creating a new one. Error: {}", e);
                 }
             }
         }
 
-        log!([DEBUG] => "No settings file found, creating new default settings.");
-
+        log!([DEBUG] => "No valid settings file found, creating new default settings.");
         let settings = Self::new().await?;
-
         settings
             .save()
             .await
@@ -119,8 +148,8 @@ impl Settings {
             "clip_fps" => {
                 settings.clip_fps = Self::get_u16(&value)?;
             }
-            "include_desktop_audio" => {
-                settings.include_desktop_audio = Self::get_bool(&value)?;
+            "include_bg_audio" => {
+                settings.include_bg_audio = Self::get_bool(&value)?;
             }
             "include_mic_audio" => {
                 settings.include_mic_audio = Self::get_bool(&value)?;
@@ -155,6 +184,13 @@ impl Settings {
             "bg_node_name" => {
                 settings.bg_node_name = Self::get_str(&value)?;
             }
+            "mic_volume" => {
+                settings.mic_volume = Self::get_u8(&value)?;
+            }
+            "bg_volume" => {
+                settings.bg_volume = Self::get_u8(&value)?;
+            }
+
             _ => return Err("Invalid key has been used!".into()),
         }
 
@@ -167,6 +203,13 @@ impl Settings {
             .as_str()
             .map(|s| s.to_string())
             .ok_or("expected string".into())
+    }
+
+    fn get_u8(value: &Value) -> Result<u8, String> {
+        value
+            .as_f64()
+            .map(|n| n as u8)
+            .ok_or("expected an u8".into())
     }
 
     fn get_u16(value: &Value) -> Result<u16, String> {

@@ -27,8 +27,8 @@ export interface Setting {
     name: string;
     description?: string;
     tooltip?: string;
-    type: 'string' | 'select' | 'boolean' | 'number';
-    options?: (string | number)[];
+    type: 'string' | 'select' | 'boolean' | 'number' | 'slider';
+    options?: (string | number)[] | AudioDevice[];
     defaultValue: JsonValue;
     currentValue?: JsonValue;
     storageKey: string;
