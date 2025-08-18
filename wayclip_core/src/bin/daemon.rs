@@ -177,10 +177,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // GPT-5 MINI
     pipeline_parts.clear();
-    pipeline_parts.push(
-        "matroskamux name=mux streamable=true ! queue max-size-buffers=2 ! appsink name=sink"
-            .to_string(),
-    );
+    // Removed  streamable=true
+    pipeline_parts
+        .push("matroskamux name=mux ! queue max-size-buffers=2 ! appsink name=sink".to_string());
 
     let (width, height) = {
         let parts: Vec<&str> = settings.clip_resolution.split('x').collect();
@@ -220,7 +219,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         videorate ! video/x-raw,framerate={fps}/1 ! \
         queue max-size-buffers=8 leaky=downstream ! \
         cudaupload ! nvh264enc bitrate={bitrate} ! \
-        h264parse ! queue ! mux.video_0",
+        h264parse  config-interval=-1 ! queue ! mux.video_0",
         fd = pipewire_fd.as_raw_fd(),
         path = node_id,
         fps = settings.clip_fps,
@@ -231,7 +230,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     if has_audio {
         pipeline_parts
-            .push("audiomixer name=mix ! opusenc ! opusparse ! queue ! mux.audio_0".to_string());
+            .push("audiomixer name=mix ! audioconvert ! audio/x-raw,channels=2 ! opusenc ! opusparse ! queue ! mux.audio_0".to_string());
 
         if settings.include_bg_audio {
             log_to!(logger, Info,
@@ -240,16 +239,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
             );
             match get_pipewire_node_id(&settings.bg_node_name, &logger).await {
                 Ok(bg_node_id) => {
-                    // pipeline_parts.push(format!(
-                    //     "pipewiresrc do-timestamp=true path={bg_node_id} ! \
-                    //  audio/x-raw,rate=48000,channels=2 ! \
-                    //  queue max-size-buffers=8 ! audioconvert ! audioresample ! mix.sink_0",
-                    // ));
                     pipeline_parts.push(format!(
                         "pipewiresrc do-timestamp=true path={bg_node_id} ! \
-                     audio/x-raw,rate=48000,channels=2 ! \
-                     queue max-size-buffers=8 ! audioconvert ! audioresample ! mix.sink_0",
+                        queue ! \
+                        audio/x-raw,rate=48000,channels=2 ! \
+                        audioconvert ! audioresample ! mix.sink_0",
                     ));
+                    //                       queue max-size-buffers=8 ! audioconvert ! audioresample ! mix.sink_1",
                 }
                 Err(e) => {
                     log_to!(logger, Error, [GST] => "Could not find monitor source '{}': {}. Background audio will not be recorded.", settings.bg_node_name, e);
@@ -264,16 +260,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
             );
             match get_pipewire_node_id(&settings.mic_node_name, &logger).await {
                 Ok(mic_node_id) => {
-                    // pipeline_parts.push(format!(
-                    //     "pipewiresrc do-timestamp=true path={mic_node_id} ! \
-                    //  audio/x-raw,rate=48000,channels=2 ! \
-                    //  queue max-size-buffers=8 ! audioconvert ! audioresample ! mix.sink_1",
-                    // ));
                     pipeline_parts.push(format!(
                         "pipewiresrc do-timestamp=true path={mic_node_id} ! \
-                     audio/x-raw,rate=48000,channels=2 ! \
-                     queue max-size-buffers=8 ! audioconvert ! audioresample ! mix.sink_1",
+                        queue ! \
+                        audio/x-raw,rate=48000,channels=2 ! \
+                        audioconvert ! audioresample ! mix.sink_1",
                     ));
+                    //                       queue max-size-buffers=8 ! audioconvert ! audioresample ! mix.sink_1",
                 }
                 Err(e) => {
                     log_to!(logger, Error, [GST] => "Could not find microphone source '{}': {}. Mic audio will not be recorded.", settings.mic_node_name, e);

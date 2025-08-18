@@ -88,21 +88,21 @@ const AllClips = () => {
                 queryClient.setQueryData<PaginatedClips>(queryKey, {
                     ...previousClips,
                     clips: previousClips.clips.filter((clip) => clip.path !== deletedPath),
+                    total_clips: previousClips.total_clips - 1,
                 });
             }
-            return { previousClips };
+            return { previousClips, queryKey };
         },
 
         onError: (err, _deletedPath, context) => {
             console.error('Optimistic delete failed, rolling back:', err);
             if (context?.previousClips) {
-                const queryKey = ['clips', currentPage, debouncedSearchQuery];
-                queryClient.setQueryData(queryKey, context.previousClips);
+                queryClient.setQueryData(context.queryKey, context.previousClips);
             }
         },
 
-        onSettled: () => {
-            queryClient.invalidateQueries({ queryKey: ['clips'] });
+        onSettled: (_data, _error, _variables, context) => {
+            queryClient.invalidateQueries({ queryKey: context?.queryKey });
         },
     });
 

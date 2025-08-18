@@ -1,4 +1,5 @@
-import { readFile } from '@tauri-apps/plugin-fs';
+import { configDir } from '@tauri-apps/api/path';
+import { convertFileSrc } from '@tauri-apps/api/core';
 
 export const convertLength = (seconds: number): string => {
     const mins = Math.floor(seconds / 60);
@@ -31,9 +32,11 @@ export const convertSize = (bytes: number, decimals = 2): string => {
 };
 
 export const getPreview = async (path: string): Promise<string> => {
-    const bytes = await readFile(path);
-    const blob = new Blob([new Uint8Array(bytes)], { type: 'video/mp4' });
-    return URL.createObjectURL(blob);
+    const previewName = path.split('/').pop() || '';
+    const cnfgDir = await configDir();
+    const previewPath = `${cnfgDir}/wayclip/previews/${previewName}`;
+
+    return convertFileSrc(previewPath);
 };
 
 export const convertName = (input: string, mode: 'displayToStore' | 'storeToDisplay', defaultExt = '.mp4'): string => {

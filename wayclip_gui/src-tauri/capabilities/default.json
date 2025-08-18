@@ -13,7 +13,7 @@
         "fs:default",
         "fs:allow-app-read",
         "fs:allow-home-read-recursive",
-        "fs:scope-home-index"
+        "fs:scope-home-index",
+        "fs:scope-appconfig-recursive"
     ]
 }
-

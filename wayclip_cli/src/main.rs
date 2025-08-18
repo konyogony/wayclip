@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use std::env;
 use std::process::ExitCode;
 use tokio::process::Command;
-use wayclip_core::{Settings, WAYCLIP_TRIGGER_PATH, gather_clip_data};
+use wayclip_core::{PullClipsArgs, WAYCLIP_TRIGGER_PATH, gather_clip_data, settings::Settings};
 
 #[derive(Parser)]
 #[command(
@@ -93,7 +93,14 @@ enum DaemonCommand {
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    let path = Settings::home_path().join(Settings::load().save_path_from_home_string);
+    let settings = match Settings::load().await {
+        Ok(s) => s,
+        Err(err) => {
+            eprintln!("Couldnt load settings, error: {err:?}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let path = Settings::home_path().join(settings.save_path_from_home_string);
 
     if cli.debug {
         println!("Debug mode is ON");
@@ -130,7 +137,16 @@ async fn main() -> ExitCode {
             size,
             extra,
         } => {
-            let mut clips = match gather_clip_data(wayclip_core::Collect::All).await {
+            let mut clips = match gather_clip_data(
+                wayclip_core::Collect::All,
+                PullClipsArgs {
+                    page: 1,
+                    page_size: 100,
+                    search_query: None,
+                },
+            )
+            .await
+            {
                 Ok(clips) => clips,
                 Err(e) => {
                     eprintln!("Error: Could not list clips: {e:?}");

@@ -1,5 +1,4 @@
 import { ClipData } from '@/pages/all-clips';
-import { SmartTickerDraggable } from 'react-smart-ticker';
 import { getPreview } from '@/lib/lib';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Input } from '@/components/ui/input';
@@ -31,6 +30,7 @@ import { memo, useMemo, useState, useCallback, useRef, useEffect } from 'react';
 import { FiPlay, FiHeart, FiMoreHorizontal, FiTrash, FiShare2 } from '@vertisanpro/react-icons/fi';
 import { Button } from '@/components/ui/button';
 import { invoke } from '@tauri-apps/api/core';
+import { NavLink } from 'react-router';
 
 const ClipPreviewComponent = ({
     name,
@@ -118,7 +118,21 @@ const ClipPreviewComponent = ({
                 .then(setSrc)
                 .catch((e) => console.error(`Failed to load preview for ${path}: ${e}`));
         }
+
+        return () => {
+            if (src) {
+                if (videoRef.current) {
+                    videoRef.current.src = '';
+                    videoRef.current.removeAttribute('src');
+                    videoRef.current.load();
+                }
+            }
+        };
     }, [isVisible, path, src]);
+
+    const handleVideoError = (e: React.SyntheticEvent<HTMLVideoElement, Event>) => {
+        console.error(`Video Error for ${path}:`, e.currentTarget.error);
+    };
 
     return (
         <div
@@ -133,6 +147,7 @@ const ClipPreviewComponent = ({
                         src={src}
                         muted
                         loop
+                        onError={handleVideoError}
                         className={cn('w-full h-full transition-opacity', isVideoLoaded ? 'opacity-100' : 'opacity-0')}
                         onLoadedData={() => setIsVideoLoaded(true)}
                         onMouseEnter={() => videoRef.current?.play().catch(() => {})}
@@ -147,11 +162,14 @@ const ClipPreviewComponent = ({
 
                 {isNew && <div className='rounded-2xl bg-red-500 px-2 text-xs absolute top-2 left-2 z-10'>New!</div>}
 
-                <div className='absolute inset-0 flex items-center justify-center z-20'>
+                <NavLink
+                    to={`/video/${convertName(clipName, 'displayToStore')}`}
+                    className='absolute inset-0 flex items-center justify-center z-20'
+                >
                     <div className='w-12 h-12 bg-zinc-700 rounded-full flex items-center justify-center opacity-60 group-hover:opacity-100 hover:scale-105 transition-opacity'>
                         <FiPlay className='w-5 h-5 text-white ml-0.5' />
                     </div>
-                </div>
+                </NavLink>
 
                 <div className='absolute bottom-2 right-2 bg-black/80 text-white text-xs px-2 py-1 rounded z-20'>
                     {duration}
@@ -271,7 +289,9 @@ const ClipPreviewComponent = ({
                         <DropdownMenuLabel>Actions</DropdownMenuLabel>
                         <DropdownMenuGroup>
                             <DropdownMenuItem onClick={() => setIsRenameDialogOpen(true)}>Rename</DropdownMenuItem>
-                            <DropdownMenuItem>View</DropdownMenuItem>
+                            <DropdownMenuItem asChild>
+                                <NavLink to={`/video/${convertName(clipName, 'displayToStore')}`}>View</NavLink>
+                            </DropdownMenuItem>
                             <DropdownMenuItem
                                 onClick={() => handleLike(convertName(clipName, 'displayToStore'), isLiked)}
                             >
