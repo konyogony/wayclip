@@ -1,1 +1,88 @@
-/target
+# ======================
+# OS / Editor junk
+# ======================
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.swn
+*.swm
+*.log
+*.tmp
+*.bak
+
+# IDEs
+.idea/
+.vscode/
+*.code-workspace
+
+# ======================
+# Rust / Actix Web
+# ======================
+/target/
+**/*.rs.bk
+
+# Cargo
+Cargo.lock
+.cargo/
+.cargo-ok
+
+# ======================
+# Tauri
+# ======================
+/src-tauri/target/
+/src-tauri/.cargo/
+/src-tauri/Cargo.lock
+/src-tauri/.tauri/
+/src-tauri/debug/
+/src-tauri/release/
+/src-tauri/dist/
+
+# Generated Tauri binaries
+*.app
+*.dmg
+*.exe
+*.msi
+*.deb
+*.AppImage
+
+# ======================
+# Node.js / JS frameworks (Next.js, Vite)
+# ======================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-debug.log*
+
+# Environment
+.env
+.env*.local
+
+# Next.js
+.next/
+out/
+
+# Vite
+dist/
+.cache/
+vite.config.ts.timestamp*
+
+# ======================
+# Logs
+# ======================
+logs/
+*.log
+*.log.*
+
+# Coverage
+coverage/
+*.lcov
+
+# ======================
+# Misc
+# ======================
+*.pid
+*.seed
+*.pid.lock

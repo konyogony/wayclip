@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::process::Command;
+use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use wayclip_core::{
     cleanup, generate_preview_clip, get_pipewire_node_id, handle_bus_messages, log_to,
@@ -28,6 +29,7 @@ const SAVE_COOLDOWN: Duration = Duration::from_secs(2);
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let settings = Settings::load().await?;
     let log_dir = "/tmp/wayclip";
     create_dir_all(log_dir).expect("Failed to create log directory");
     let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
@@ -36,7 +38,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .expect("Failed to create daemon logger");
 
     log_to!(logger, Info, [DAEMON] => "Starting...");
-    let settings = Settings::load().await?;
     log_to!(logger, Debug, [DAEMON] => "Settings loaded: {:?}", settings);
 
     env::set_var(
@@ -459,11 +460,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let job_id_counter = Arc::new(AtomicUsize::new(1));
     let mut last_save_time = Instant::now() - SAVE_COOLDOWN;
-
+    let mut term_signal =
+        signal(SignalKind::terminate()).expect("Failed to install SIGTERM handler");
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 log_to!(logger, Info, [DAEMON] => "Ctrl+C received, initiating shutdown.");
+                break;
+            },
+            _ = term_signal.recv() => {
+                log_to!(logger, Info, [DAEMON] => "SIGTERM received, initiating shutdown.");
                 break;
             },
 

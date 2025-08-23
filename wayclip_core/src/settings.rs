@@ -5,10 +5,12 @@ use crate::log;
 use crate::PathBuf;
 use crate::Value;
 use anyhow::{Context, Result};
+use std::collections::HashSet;
 use tokio::fs;
 
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 pub struct Settings {
+    pub auth_token: Option<String>,
     pub clip_name_formatting: String,
     pub clip_length_s: u64,
     pub clip_resolution: String,
@@ -20,6 +22,7 @@ pub struct Settings {
     pub save_shortcut: String,
     pub open_gui_shortcut: String,
     pub toggle_notifications: bool,
+    pub daemon_pid_path: String,
     pub daemon_socket_path: String,
     pub gui_socket_path: String,
     pub mic_node_name: String,
@@ -34,6 +37,7 @@ impl Settings {
     pub async fn new() -> Result<Self> {
         let (default_source, default_sink) = get_default_audio_devices().await.unwrap_or_default();
         Ok(Self {
+            auth_token: None,
             mic_node_name: default_source.unwrap_or_default(),
             bg_node_name: default_sink.unwrap_or_default(),
             clip_name_formatting: String::from("%Y-%m-%d_%H-%M-%S"),
@@ -47,6 +51,7 @@ impl Settings {
             save_shortcut: String::from("Alt+C"),
             open_gui_shortcut: String::from("Ctrl+Alt+C"),
             toggle_notifications: true,
+            daemon_pid_path: String::from("/tmp/wayclipd.pid"),
             daemon_socket_path: String::from("/tmp/wayclipd.sock"),
             gui_socket_path: String::from("/tmp/wayclipg.sock"),
             mic_volume: 100,
@@ -64,62 +69,81 @@ impl Settings {
         home_dir().unwrap_or_else(|| PathBuf::from("."))
     }
 
-    pub async fn load() -> Result<Self> {
-        let path = Self::config_path().join("wayclip").join("settings.json");
-
-        if path.exists() {
-            log!([DEBUG] => "Found settings file at: {:?}", path);
-            let data = fs::read_to_string(&path)
-                .await
-                .context("Failed to read existing settings file")?;
-
-            match serde_json::from_str::<Value>(&data) {
-                Ok(saved_value) => {
-                    log!([DEBUG] => "Successfully parsed settings file. Merging with defaults.");
-
-                    let default_settings = Self::new().await?;
-                    let mut default_value = serde_json::to_value(default_settings)?;
-                    let default_map = default_value.as_object_mut().unwrap();
-
-                    let saved_map = saved_value
-                        .as_object()
-                        .context("Settings JSON is not an object")?;
-
-                    for (key, value) in saved_map {
-                        default_map.insert(key.clone(), value.clone());
-                    }
-
-                    for key in saved_map.keys() {
-                        if !default_map.contains_key(key) {
-                            log!([TAURI] => "WARN: Unknown key '{}' found in settings.json. It will be ignored.", key);
-                        }
-                    }
-
-                    let final_settings: Settings = serde_json::from_value(default_value.clone())
-                        .context("Failed to create final settings from merged data")?;
-
-                    final_settings
-                        .save()
-                        .await
-                        .context("Failed to save merged settings")?;
-
-                    return Ok(final_settings);
-                }
-                Err(e) => {
-                    log!([TAURI] => "WARN: Settings file is corrupt or invalid, creating a new one. Error: {}", e);
-                }
-            }
-        }
-
-        log!([DEBUG] => "No valid settings file found, creating new default settings.");
+    async fn create_and_save_new() -> Result<Self> {
+        log!([DEBUG] => "Creating and saving new default settings.");
         let settings = Self::new().await?;
         settings
             .save()
             .await
             .context("Failed to save newly created settings")?;
-        log!([DEBUG] => "New default settings saved to {:?}", path);
-
         Ok(settings)
+    }
+
+    pub async fn load() -> Result<Self> {
+        let path = Self::config_path().join("wayclip").join("settings.json");
+
+        if !path.exists() {
+            log!([DEBUG] => "No settings file found.");
+            return Self::create_and_save_new().await;
+        }
+
+        log!([DEBUG] => "Found settings file at: {:?}", path);
+        let data = fs::read_to_string(&path)
+            .await
+            .context("Failed to read existing settings file")?;
+
+        let saved_value: Value = match serde_json::from_str(&data) {
+            Ok(value) => value,
+            Err(e) => {
+                log!([TAURI] => "WARN: Settings file is corrupt or invalid, creating a new one. Error: {}", e);
+                return Self::create_and_save_new().await;
+            }
+        };
+
+        let saved_map = match saved_value.as_object() {
+            Some(map) => map,
+            None => {
+                log!([TAURI] => "WARN: Settings JSON is not an object, creating a new one.");
+                return Self::create_and_save_new().await;
+            }
+        };
+
+        let default_settings = Self::new().await?;
+        let mut default_value = serde_json::to_value(default_settings)?;
+        let default_map = default_value.as_object().unwrap();
+
+        let saved_keys: HashSet<_> = saved_map.keys().cloned().collect();
+        let default_keys: HashSet<_> = default_map.keys().cloned().collect();
+
+        if saved_keys == default_keys {
+            log!([DEBUG] => "Settings file is up-to-date. Loading directly.");
+            return serde_json::from_value(saved_value)
+                .context("Failed to deserialize up-to-date settings");
+        }
+
+        log!([DEBUG] => "Settings file is outdated or has extra keys. Merging with defaults.");
+
+        let default_map_mut = default_value.as_object_mut().unwrap();
+
+        for (key, value) in saved_map {
+            default_map_mut.insert(key.clone(), value.clone());
+        }
+
+        for key in saved_keys.difference(&default_keys) {
+            log!([TAURI] => "WARN: Unknown key '{}' found in settings.json. It will be ignored.", key);
+        }
+
+        let final_settings: Settings = serde_json::from_value(default_value)
+            .context("Failed to create final settings from merged data")?;
+
+        final_settings
+            .save()
+            .await
+            .context("Failed to save merged settings")?;
+
+        log!([DEBUG] => "Successfully merged and saved updated settings.");
+
+        Ok(final_settings)
     }
 
     pub async fn save(&self) -> Result<()> {
@@ -136,6 +160,9 @@ impl Settings {
         let mut settings = Self::load().await.map_err(|e| e.to_string())?;
 
         match key {
+            "auth_token" => {
+                settings.auth_token = Some(Self::get_str(&value)?);
+            }
             "clip_name_formatting" => {
                 settings.clip_name_formatting = Self::get_str(&value)?;
             }
@@ -175,9 +202,15 @@ impl Settings {
             "toggle_notifications" => {
                 settings.toggle_notifications = Self::get_bool(&value)?;
             }
-            "gui_socket_path" => settings.gui_socket_path = Self::get_str(&value)?,
-            "daemon_socket_path" => settings.daemon_socket_path = Self::get_str(&value)?,
-
+            "daemon_pid_path" => {
+                settings.daemon_pid_path = Self::get_str(&value)?;
+            }
+            "gui_socket_path" => {
+                settings.gui_socket_path = Self::get_str(&value)?;
+            }
+            "daemon_socket_path" => {
+                settings.daemon_socket_path = Self::get_str(&value)?;
+            }
             "mic_node_name" => {
                 settings.mic_node_name = Self::get_str(&value)?;
             }

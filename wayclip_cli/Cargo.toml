@@ -7,3 +7,14 @@ edition = "2024"
 clap = { version = "4", features = ["derive"] }
 wayclip_core = { path = "../wayclip_core" }
 tokio = { version = "1", features = ["full"] }
+serde_json = "1.0.143"
+serde = { version = "1.0", features = ["derive"] }
+anyhow = "1.0.99"
+warp = { version = "0.4.2", features = ["server"] }
+urlencoding = "2.1.3"
+opener = "0.8.2"
+comfy-table = "7.1.4"
+inquire = "0.7.5"
+arboard = "3.6.0"
+colored = "3.0.0"
+chrono = "0.4.41"

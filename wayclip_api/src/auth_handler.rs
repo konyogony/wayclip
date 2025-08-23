@@ -1,7 +1,4 @@
-use crate::{
-    AppState, jwt,
-    models::{GitHubUser, User},
-};
+use crate::{AppState, jwt};
 use actix_web::{
     HttpMessage, HttpRequest, HttpResponse, Responder,
     cookie::{Cookie, SameSite},
@@ -12,10 +9,12 @@ use actix_web::{
 use oauth2::reqwest::async_http_client;
 use oauth2::{AuthorizationCode, CsrfToken, RedirectUrl, Scope, TokenResponse};
 use uuid::Uuid;
+use wayclip_core::models::{GitHubUser, User};
 
 #[derive(serde::Deserialize)]
 pub struct AuthLoginQuery {
     client: Option<String>,
+    redirect_uri: Option<String>,
 }
 
 #[get("/github")]
@@ -25,17 +24,24 @@ async fn github_login(
 ) -> impl Responder {
     let client_type = query.client.as_deref().unwrap_or("web");
 
+    let final_redirect_str = query
+        .redirect_uri
+        .clone()
+        .unwrap_or_else(|| "http://localhost:1420".to_string());
+
     let csrf_token = CsrfToken::new_random();
 
-    let redirect_url = RedirectUrl::new("http://127.0.0.1:8080/auth/callback".to_string()).unwrap();
-
-    let state_with_client = format!("{}:{}", csrf_token.secret(), client_type);
+    let state_with_client = format!(
+        "{}:{}:{}",
+        csrf_token.secret(),
+        client_type,
+        final_redirect_str
+    );
     let csrf_state = CsrfToken::new(state_with_client);
 
     let (authorize_url, _csrf_state) = data
         .oauth_client
         .clone()
-        .set_redirect_uri(redirect_url)
         .authorize_url(|| csrf_state)
         .add_scope(Scope::new("read:user".to_string()))
         .url();
@@ -56,15 +62,17 @@ async fn github_callback(
     query: web::Query<AuthRequest>,
     data: web::Data<AppState>,
 ) -> impl Responder {
-    let state_parts: Vec<&str> = query.state.split(':').collect();
-    let client_type = if state_parts.len() == 2 {
-        state_parts[1]
-    } else {
-        "web"
-    };
+    let state_parts: Vec<&str> = query.state.splitn(3, ':').collect();
+
+    if state_parts.len() != 3 {
+        return HttpResponse::BadRequest().body("Invalid state format.");
+    }
+
+    let client_type = state_parts[1];
+    let redirect_url_str = state_parts[2];
 
     let code = AuthorizationCode::new(query.code.clone());
-    let redirect_url = RedirectUrl::new("http://127.0.0.1:8080/auth/callback".to_string()).unwrap();
+    let redirect_url = RedirectUrl::new(redirect_url_str.to_string()).unwrap();
 
     let token_res = data
         .oauth_client
@@ -116,7 +124,12 @@ async fn github_callback(
         Err(_) => return HttpResponse::InternalServerError().body("Failed to create token"),
     };
 
-    if client_type == "tauri" {
+    if client_type == "cli" {
+        let deep_link = format!("{redirect_url_str}?token={jwt}");
+        HttpResponse::Found()
+            .append_header((LOCATION, deep_link))
+            .finish()
+    } else if client_type == "tauri" {
         let deep_link = format!("wayclip://auth/callback?token={jwt}");
         HttpResponse::Found()
             .append_header((LOCATION, deep_link))

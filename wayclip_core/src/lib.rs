@@ -45,7 +45,10 @@ pub const CLEANUP: &str = "\x1b[92m[cleanup]\x1b[0m"; // bright green
 pub const DEBUG: &str = "\x1b[93m[debug]\x1b[0m"; // idk
 pub const AUTH: &str = "\x1b[94m[auth]\x1b[0m"; // idk
 
+pub mod api;
+pub mod control;
 pub mod logging;
+pub mod models;
 pub mod ring;
 pub mod settings;
 
@@ -295,6 +298,12 @@ pub async fn cleanup(
         log_to!(logger, Warn, [UNIX] => "Failed to remove daemon socket file, {}", e);
     } else {
         log_to!(logger, Info, [UNIX] => "Daemon socket file removed");
+    }
+
+    if let Err(e) = remove_file(&settings.daemon_pid_path) {
+        log_to!(logger, Warn, [UNIX] => "Failed to remove daemon PID file, {}", e);
+    } else {
+        log_to!(logger, Info, [UNIX] => "Daemon PID file removed");
     }
 
     send_status_to_gui(

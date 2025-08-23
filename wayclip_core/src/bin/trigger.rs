@@ -8,13 +8,13 @@ use wayclip_core::{log, settings::Settings};
 static SOUND_BYTES: &[u8] = include_bytes!("../../assets/save.oga");
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), anyhow::Error> {
     // For sounds
     let uid = unsafe { libc::getuid() };
     let runtime_dir = format!("/run/user/{uid}");
     env::set_var("XDG_RUNTIME_DIR", runtime_dir);
 
-    let settings = Settings::load();
+    let settings = Settings::load().await?;
     if let Ok(stream_handle) = OutputStreamBuilder::open_default_stream() {
         let sink = Sink::connect_new(stream_handle.mixer());
 
@@ -37,4 +37,5 @@ async fn main() {
         log!([UNIX] => "failed to connect to socket, likely the daemon is not running");
         std::process::exit(1);
     }
+    Ok(())
 }

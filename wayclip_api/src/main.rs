@@ -10,7 +10,6 @@ mod auth_handler;
 mod db;
 mod jwt;
 mod middleware;
-mod models;
 
 #[derive(Clone)]
 pub struct AppState {

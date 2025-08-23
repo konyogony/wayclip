@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
 
-#[derive(Debug, Serialize, FromRow)]
+#[derive(Debug, Serialize, FromRow, Deserialize, Clone)]
 pub struct User {
     pub id: Uuid,
     pub github_id: i64,
@@ -13,8 +13,9 @@ pub struct User {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, sqlx::Type)]
 #[sqlx(type_name = "subscription_tier", rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
 pub enum SubscriptionTier {
     Free,
     Paid,

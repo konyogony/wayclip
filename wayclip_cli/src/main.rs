@@ -1,14 +1,25 @@
+use crate::auth::{handle_login, handle_logout};
+use crate::list::handle_list;
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use colored::*;
+use inquire::{Select, Text};
 use std::env;
 use std::process::ExitCode;
 use tokio::process::Command;
-use wayclip_core::{PullClipsArgs, WAYCLIP_TRIGGER_PATH, gather_clip_data, settings::Settings};
+use wayclip_core::control::DaemonManager;
+use wayclip_core::{
+    Collect, PullClipsArgs, WAYCLIP_TRIGGER_PATH, api, gather_clip_data, settings::Settings,
+};
+
+pub mod auth;
+pub mod list;
 
 #[derive(Parser)]
 #[command(
     name = "wayclip",
     version,
-    about = "An instant clipping tool built on top of PipeWire and GStreamer using Rust."
+    about = "An instant clipping tool with cloud sync, built on PipeWire and GStreamer."
 )]
 struct Cli {
     #[arg(short, long)]
@@ -18,283 +29,276 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
-enum Commands {
+pub enum Commands {
     Daemon {
         #[command(subcommand)]
         action: DaemonCommand,
     },
-    Status,
     Save,
     List {
-        #[arg(
-            short = 't',
-            long = "timestamp",
-            help = "Sort by creation time (newest first)"
-        )]
+        #[arg(short = 't', long = "timestamp")]
         timestamp: bool,
-        #[arg(
-            short = 'l',
-            long = "length",
-            help = "Sort by clip duration (longest first)"
-        )]
+        #[arg(short = 'l', long = "length")]
         length: bool,
-        #[arg(short = 'r', long = "reverse", help = "Reverse sort order")]
+        #[arg(short = 'r', long = "reverse")]
         reverse: bool,
-        #[arg(short = 's', long = "size", help = "Sort by file size (largest first)")]
+        #[arg(short = 's', long = "size")]
         size: bool,
-        #[arg(
-            short = 'e',
-            long = "extra",
-            help = "Show all metadata (tags, liked, etc.)"
-        )]
+        #[arg(short = 'e', long = "extra")]
         extra: bool,
     },
+    Manage,
     Config {
-        #[arg(short = 'e', long = "editor", help = "Use a preferred editor")]
+        #[arg(short = 'e', long = "editor")]
         editor: Option<String>,
     },
     View {
-        // Sometime in future add autocompletion and hints
-        #[arg(help = "Name of the clip to view")]
         name: String,
-        #[arg(short = 'p', long = "player", help = "Use a preferred media player")]
+        #[arg(short = 'p', long = "player")]
         player: Option<String>,
     },
     Delete {
-        // Sometime in future add autocompletion and hints
-        #[arg(help = "Name of the clip to delete")]
         name: String,
     },
     Rename {
-        // Sometime in future add autocompletion and hints
-        #[arg(help = "Name of the clip to rename")]
         name: String,
     },
     Edit {
-        // Sometime in future add autocompletion and hints
-        #[arg(help = "Name of clip to edit (trimming)")]
         name: String,
-        #[arg(help = "Start time in seconds or hh:mm:ss")]
         start_time: String,
-        #[arg(help = "End time in seconds or hh:mm:ss")]
         end_time: String,
-        #[arg(help = "Disable audio (true/false)", default_value_t = false)]
+        #[arg(default_value_t = false)]
         disable_audio: bool,
+    },
+    Login,
+    Logout,
+    Me,
+    Share {
+        #[arg(help = "Name of the clip to share")]
+        name: String,
     },
 }
 
 #[derive(Subcommand)]
-enum DaemonCommand {
+pub enum DaemonCommand {
     Start,
     Stop,
     Restart,
+    Status,
 }
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let cli = Cli::parse();
-    let settings = match Settings::load().await {
-        Ok(s) => s,
-        Err(err) => {
-            eprintln!("Couldnt load settings, error: {err:?}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let path = Settings::home_path().join(settings.save_path_from_home_string);
+    if let Err(e) = run().await {
+        eprintln!("{} {}", "Error:".red().bold(), e);
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
 
+async fn run() -> Result<()> {
+    let cli = Cli::parse();
     if cli.debug {
-        println!("Debug mode is ON");
+        println!("{}", "Debug mode is ON".yellow());
     }
 
     match &cli.command {
-        Commands::Save => {
-            let mut trigger_command = Command::new(WAYCLIP_TRIGGER_PATH);
-
-            match trigger_command.status().await {
-                Ok(status) => {
-                    if status.success() {
-                        println!("Trigger process finished successfully.");
-                    } else {
-                        eprintln!("Trigger process failed with status: {status}");
-                        return ExitCode::FAILURE;
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Failed to execute the trigger process.");
-                    eprintln!("           Reason: {e}",);
-                    eprintln!(
-                        "           Please check if the path is correct and the file is executable."
-                    );
-                    return ExitCode::FAILURE;
-                }
-            }
-        }
-
-        Commands::List {
-            timestamp,
-            length,
-            reverse,
-            size,
-            extra,
-        } => {
-            let mut clips = match gather_clip_data(
-                wayclip_core::Collect::All,
-                PullClipsArgs {
-                    page: 1,
-                    page_size: 100,
-                    search_query: None,
-                },
-            )
-            .await
-            {
-                Ok(clips) => clips,
-                Err(e) => {
-                    eprintln!("Error: Could not list clips: {e:?}");
-                    return ExitCode::FAILURE;
-                }
-            };
-
-            clips.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-
-            if *reverse {
-                clips.reverse();
-            }
-
-            if clips.is_empty() {
-                println!("No clips found.");
-                return ExitCode::SUCCESS;
-            }
-
-            println!("Found {} clips:", clips.len());
-
-            let max_name_len = clips.iter().map(|c| c.name.len()).max().unwrap_or(20);
-
-            for clip in clips {
-                let mut output_parts = Vec::new();
-
-                output_parts.push(format!("{:<width$}", clip.name, width = max_name_len));
-                if *timestamp {
-                    output_parts.push(clip.created_at.format("%Y-%m-%d %H:%M").to_string());
-                }
-                if *size {
-                    output_parts.push(format!("{:>7.2} MB", clip.size as f64 / 1_048_576.0));
-                }
-                if *length {
-                    output_parts.push(format!("{:>6.2}s", clip.length));
-                }
-                if *extra {
-                    let mut extra_details = Vec::new();
-                    if clip.liked {
-                        extra_details.push("♥ Liked".to_string());
-                    }
-                    if !clip.tags.is_empty() {
-                        let tags_str = clip
-                            .tags
-                            .iter()
-                            .map(ToString::to_string)
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        extra_details.push(format!("Tags: [{tags_str}]"));
-                    }
-
-                    if !extra_details.is_empty() {
-                        output_parts.push(extra_details.join(" | "));
-                    }
-                }
-
-                println!("{}", output_parts.join("   "));
-            }
-        }
-        Commands::Config { editor } => {
-            let editor_name = if let Some(user_editor) = editor {
-                Ok(user_editor.clone())
-            } else {
-                env::var("VISUAL").or_else(|_| env::var("EDITOR"))
-            };
-
-            let mut command = match editor_name {
-                Ok(editor_name) => {
-                    println!("Using editor: {}", &editor_name);
-                    let mut parts = editor_name.split_whitespace();
-                    let mut cmd = Command::new(parts.next().unwrap());
-                    cmd.args(parts);
-                    cmd
-                }
-                Err(_) => {
-                    println!("VISUAL and EDITOR not set, falling back to nano.");
-                    Command::new("nano")
-                }
-            };
-
-            command.arg(
-                Settings::config_path()
-                    .join("wayclip")
-                    .join("settings.json"),
-            );
-
-            match command.status().await {
-                Ok(status) => {
-                    if status.success() {
-                        println!("Opened config successfully.");
-                    } else {
-                        eprintln!("Process failed with status: {status}");
-                        return ExitCode::FAILURE;
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Failed to open config.");
-                    eprintln!("           Reason: {e}",);
-                    eprintln!("           Please check if the path is correct.");
-                    return ExitCode::FAILURE;
-                }
-            }
-        }
-
-        Commands::View { name, player } => {
-            let player_name = player.clone().unwrap_or_else(|| String::from("mpv"));
-
-            println!("Using player: {}", &player_name);
-
-            let mut parts = player_name.split_whitespace();
-            let mut command = Command::new(parts.next().unwrap());
-            command.args(parts);
-
-            command.arg(path.join(name));
-
-            match command.status().await {
-                Ok(status) if status.success() => {
-                    println!("Viewing clip successfully.");
-                }
-                Ok(status) => {
-                    eprintln!("Process failed with status: {status}");
-                    return ExitCode::FAILURE;
-                }
-                Err(e) => {
-                    eprintln!("Failed to view clip.");
-                    eprintln!("           Reason: {e}");
-                    eprintln!("           Please check if the name is correct.");
-                    return ExitCode::FAILURE;
-                }
-            }
-        }
-
+        Commands::Login => handle_login().await?,
+        Commands::Logout => handle_logout().await?,
+        Commands::Me => handle_me().await?,
+        Commands::Share { name } => handle_share(name).await?,
+        Commands::Save => handle_save().await?,
+        Commands::List { .. } => handle_list(&cli.command).await?,
+        Commands::Manage => handle_manage().await?,
+        Commands::Config { editor } => handle_config(editor.as_deref()).await?,
+        Commands::View { name, player } => handle_view(name, player.as_deref()).await?,
         Commands::Rename { name } => println!("Renaming clip: {name}"),
         Commands::Delete { name } => println!("Deleting clip: {name}"),
-        Commands::Edit {
-            name,
-            start_time,
-            end_time,
-            disable_audio,
-        } => println!(
-            "Editing clip {name} from {start_time} to {end_time}, disable audio: {disable_audio}"
-        ),
-        Commands::Status => println!("Status of Wayclip"),
-        Commands::Daemon { action } => match action {
-            DaemonCommand::Start => println!("Starting daemon"),
-            DaemonCommand::Stop => println!("Stopping daemon"),
-            DaemonCommand::Restart => println!("Restarting daemon"),
-        },
+        Commands::Edit { .. } => println!("Editing clip..."),
+        Commands::Daemon { action } => {
+            let manager = DaemonManager::new();
+            match action {
+                DaemonCommand::Start => manager.start().await?,
+                DaemonCommand::Stop => manager.stop().await?,
+                DaemonCommand::Restart => manager.restart().await?,
+                DaemonCommand::Status => {
+                    manager.status().await?;
+                }
+            }
+        }
     }
 
-    ExitCode::SUCCESS
+    Ok(())
+}
+
+async fn handle_manage() -> Result<()> {
+    loop {
+        let mut clips = gather_clip_data(
+            Collect::All,
+            PullClipsArgs {
+                page: 1,
+                page_size: 100,
+                search_query: None,
+            },
+        )
+        .await?
+        .clips;
+
+        if clips.is_empty() {
+            println!("{}", "No clips found to manage.".yellow());
+            return Ok(());
+        }
+
+        clips.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+        let mut clip_options: Vec<String> = clips.iter().map(|c| c.name.clone()).collect();
+        clip_options.insert(0, "[Quit]".to_string());
+
+        let selected_clip_name = Select::new("Select a clip to manage:", clip_options).prompt()?;
+
+        if selected_clip_name == "[Quit]" {
+            break;
+        }
+
+        let options = vec![
+            "▷ View",
+            "✎ Rename",
+            "✗ Delete",
+            "⎘ Copy Name",
+            "← Back to List",
+        ];
+        let action = Select::new(
+            &format!("Action for '{}':", selected_clip_name.cyan()),
+            options,
+        )
+        .prompt()?;
+
+        match action {
+            "▷ View" => {
+                handle_view(&selected_clip_name, None).await?;
+            }
+            "✎ Rename" => {
+                let new_name = Text::new("Enter new name:").prompt()?;
+                println!("Renaming '{selected_clip_name}' to '{new_name}' (Not yet implemented)",);
+            }
+            "✗ Delete" => {
+                println!("Deleting '{selected_clip_name}' (Not yet implemented)");
+            }
+            "⎘ Copy Name" => {
+                let mut clipboard = arboard::Clipboard::new()?;
+                clipboard.set_text(&selected_clip_name)?;
+                println!("{}", "✔ Name copied to clipboard!".green());
+            }
+            _ => continue,
+        }
+        println!();
+    }
+    Ok(())
+}
+
+async fn handle_me() -> Result<()> {
+    match api::get_current_user().await {
+        Ok(user) => {
+            println!("{}", "┌─ Your Profile ─────────".bold());
+            println!("│ {} {}", "Username:".cyan(), user.username);
+            println!("│ {} {}", "User ID:".cyan(), user.id);
+            println!(
+                "│ {} {}",
+                "Tier:".cyan(),
+                format!("{:?}", user.tier).green()
+            );
+            println!(
+                "│ {} {}",
+                "Member Since:".cyan(),
+                user.created_at.format("%Y-%m-%d")
+            );
+            println!("{}", "└────────────────────────".bold());
+        }
+        Err(api::ApiClientError::Unauthorized) => {
+            bail!("You are not logged in. Please run `wayclip login` first.");
+        }
+        Err(e) => {
+            bail!("Failed to fetch profile: {}", e);
+        }
+    }
+    Ok(())
+}
+
+async fn handle_share(clip_name: &str) -> Result<()> {
+    println!("Attempting to share clip: '{clip_name}'...");
+    let client = api::get_api_client().await?;
+    match api::share_clip(&client, clip_name).await {
+        Ok(_) => println!("{}", "✔ Clip shared successfully! (Placeholder)".green()),
+        Err(api::ApiClientError::Unauthorized) => {
+            bail!("You must be logged in to share clips. Please run `wayclip login`.");
+        }
+        Err(e) => {
+            bail!("Failed to share clip: {}", e);
+        }
+    }
+    Ok(())
+}
+
+async fn handle_save() -> Result<()> {
+    let mut trigger_command = Command::new(WAYCLIP_TRIGGER_PATH);
+    let status = trigger_command
+        .status()
+        .await
+        .context("Failed to execute the trigger process. Is the daemon running?")?;
+    if status.success() {
+        println!("{}", "✔ Trigger process finished successfully.".green());
+    } else {
+        bail!("Trigger process failed with status: {}", status);
+    }
+    Ok(())
+}
+
+async fn handle_config(editor: Option<&str>) -> Result<()> {
+    let editor_name = editor
+        .map(String::from)
+        .or_else(|| env::var("VISUAL").ok())
+        .or_else(|| env::var("EDITOR").ok());
+    let mut command = match editor_name {
+        Some(editor) => {
+            println!("Using editor: {}", &editor);
+            let mut parts = editor.split_whitespace();
+            let mut cmd = Command::new(parts.next().unwrap_or("nano"));
+            cmd.args(parts);
+            cmd
+        }
+        None => {
+            println!("VISUAL and EDITOR not set, falling back to nano.");
+            Command::new("nano")
+        }
+    };
+    command.arg(
+        Settings::config_path()
+            .join("wayclip")
+            .join("settings.json"),
+    );
+    let status = command.status().await.context("Failed to open editor")?;
+    if !status.success() {
+        bail!("Editor process failed with status: {}", status);
+    }
+    Ok(())
+}
+
+async fn handle_view(name: &str, player: Option<&str>) -> Result<()> {
+    let settings = Settings::load().await?;
+    let clips_path = Settings::home_path().join(&settings.save_path_from_home_string);
+    let clip_file = clips_path.join(name);
+    let player_name = player.unwrap_or("mpv");
+    println!("⏵ Launching '{}' with {}...", name.cyan(), player_name);
+    let mut parts = player_name.split_whitespace();
+    let mut command = Command::new(parts.next().unwrap_or("mpv"));
+    command.args(parts);
+    command.arg(clip_file);
+    let status = command
+        .status()
+        .await
+        .context(format!("Failed to launch media player '{player_name}'"))?;
+    if !status.success() {
+        bail!("Media player process failed with status: {}", status);
+    }
+    Ok(())
 }
