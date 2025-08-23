@@ -6,47 +6,10 @@
 
 # Prerequisites
 
-- [Wayland](https://wayland.freedesktop.org/), works _so far only_ on Wayland. I may add more support for X11 in the future.
-- [Hyprland](https://hyprland.org/) **OPTIONAL**, but more recommended, since ive tested this only for it, and their [portal](https://archlinux.org/packages/?name=xdg-desktop-portal-hyprland) supports screencast, as well as [hyprctl](https://wiki.hyprland.org/Configuring/Using-hyprctl/) allows for keybinding.
-- [xdg-desktop-portal-hyprland](https://archlinux.org/packages/?name=xdg-desktop-portal-hyprland), you can use any xdg-desktop-portal, make sure it allows for screencast. You check them [here](https://wiki.archlinux.org/title/XDG_Desktop_Portal)
 - [gstreamer](https://wiki.archlinux.org/title/GStreamer)
-- [pipewiresrc](https://wiki.archlinux.org/title/PipeWire)
+- [pipewires](https://wiki.archlinux.org/title/PipeWire)
 
 Current version of wayclip works with [following](https://cdn.konyogony.dev/u/Uzbdvb.sh) libs and dependencies installed. Note that newer version may work, but they have not been thoroughly tested yet
-
-# Roadmap
-
-- [ ] Background proccess (daemon)
-  - [x] Progress
-  - [x] Pull settings from `.config/wayclip/settings.json`
-
-- [ ] GUI using tauri
-  - [x] Settup tauri and vite environment
-  - [x] Sidebar & Routing
-  - [ ] Show all saved clips
-  - [ ] Rename, delete, play, cut clips
-  - [ ] Upload / Share clips
-  - [ ] Notifications
-  - [ ] Start / Stop, save recording
-  - [x] Settings
-    - [x] Clip name formatting
-    - [x] Video format (or maybe enforce only mp4)
-    - [x] Clip length (30s, 1m, 2m, 5m, 10m)
-    - [x] Storage location
-      - [ ] Maximum storage size
-    - [x] Clip quality
-      - [x] Resolution
-      - [x] FPS
-      - [x] Include audio?
-
-- [ ] Website (NextJS)
-  - [ ] Information
-  - [ ] Docs (Doxium)
-- [ ] Misc
-  - [ ] Option to save the clips somewhere online on a cdn
-  - [ ] Share in an embed
-  - [ ] Discord server (better to use konyogony.dev)
-
 # Credits:
 
 - Save sound: "window-question.oga" by [freedesktop.org](https://www.freedesktop.org/wiki/) contributors, licensed under [Creative Commons Attribution 3.0](https://creativecommons.org/licenses/by/3.0/)
