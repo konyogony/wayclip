@@ -15,7 +15,7 @@ const MainLayout = () => {
 
     const toggleSidebar = () => setIsOpen((prev) => !prev);
     return (
-        <main className='flex flex-col h-screen' id='radix-work'>
+        <main className='flex flex-col h-screen overflow-clip' id='radix-work'>
             <div
                 className='flex-shrink-0 py-2 w-full flex flex-row gap-2 select-none px-2 items-center relative'
                 data-tauri-drag-region
@@ -43,14 +43,14 @@ const MainLayout = () => {
                     <RxCross2 size={14} />
                 </button>
             </div>
-            <SidebarContext.Provider value={{ isOpen, toggleSidebar }}>
-                <div className='flex flex-row flex-1 overflow-hidden'>
+            <div className='flex flex-row flex-1 overflow-hidden'>
+                <SidebarContext.Provider value={{ isOpen, toggleSidebar }}>
                     <Sidebar routes={routes} isOpen={isOpen} />
                     <div className='flex flex-col items-center w-full rounded-tl-2xl bg-[#09090b] overflow-y-auto border-l border-t border-zinc-800'>
                         <Outlet />
                     </div>
-                </div>
-            </SidebarContext.Provider>
+                </SidebarContext.Provider>
+            </div>
 
             <Toaster />
         </main>

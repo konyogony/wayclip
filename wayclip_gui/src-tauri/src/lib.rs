@@ -1,28 +1,59 @@
 use std::io::{BufRead, BufReader};
 use std::os::unix::{fs::FileTypeExt, net::UnixListener};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Emitter, Listener, Manager, Wry,
+    AppHandle, Emitter, Manager, Wry, Listener
 };
+use tauri_plugin_deep_link::DeepLinkExt;
+use tauri_plugin_store::{Store, StoreExt};
 use wayclip_core::{
     gather_clip_data, generate_all_previews, log, settings::Settings, ClipData, Collect, Payload,
     PullClipsArgs, WAYCLIP_TRIGGER_PATH,
 };
 
+pub mod auth;
 pub mod commands;
 
 pub struct AppState {
     pub clips: Mutex<Vec<ClipData>>,
+    pub store: Arc<Store<Wry>>,
 }
+
+fn handle_deep_link(app: &AppHandle<Wry>, url_str: &str) {
+    log!([TAURI] => "Central handler received deep link: {}", url_str);
+    if let Ok(parsed_url) = url::Url::parse(url_str) {
+        let token_opt = parsed_url
+            .query_pairs()
+            .find(|(key, _)| key == "token")
+            .map(|(_, value)| value.into_owned());
+
+        if let Some(token) = token_opt {
+            log!([TAURI] => "Token found, attempting to store in '.store.bin'...");
+            if let Ok(store) = app.store(".store.bin") {
+                store.set("auth_token", serde_json::json!(token));
+                if let Err(e) = store.save() {
+                    log!([TAURI] => "[ERROR] Failed to save store: {}", e);
+                } else {
+                    log!([TAURI] => "Token stored. Emitting 'auth-state-changed'.");
+                    let _ = app.emit("auth-state-changed", true);
+                }
+            } else {
+                log!([TAURI] => "[ERROR] Failed to open store to save token.");
+            }
+        }
+    }
+}
+
 
 fn setup_socket_listener(app: AppHandle<Wry>, socket_path: String) {
     std::thread::spawn(move || {
+        log!([TAURI] => "Socket listener thread started.");
         if let Ok(metadata) = std::fs::metadata(&socket_path) {
             if metadata.file_type().is_socket() {
                 if let Err(e) = std::fs::remove_file(&socket_path) {
-                    log!([TAURI] => "Failed to remove old GUI socket file at {}: {}", socket_path, e);
+                    log!([TAURI] => "[ERROR] Failed to remove old GUI socket file at {}: {}", socket_path, e);
                     app.emit(
                         "daemon-status-update",
                         Payload {
@@ -48,7 +79,7 @@ fn setup_socket_listener(app: AppHandle<Wry>, socket_path: String) {
                 )
                 .unwrap();
 
-                log!([TAURI] => "Failed to bind to socket: {e}");
+                log!([TAURI] => "[ERROR] Failed to bind to socket: {}", e);
                 return;
             }
         };
@@ -62,7 +93,7 @@ fn setup_socket_listener(app: AppHandle<Wry>, socket_path: String) {
                     let mut line = String::new();
                     while reader.read_line(&mut line).unwrap_or(0) > 0 {
                         let status_message = line.trim().to_string();
-                        log!([TAURI] => "Received status: {}", status_message);
+                        log!([TAURI] => "Socket received status: {}", status_message);
 
                         app.emit(
                             "daemon-status-update",
@@ -76,25 +107,85 @@ fn setup_socket_listener(app: AppHandle<Wry>, socket_path: String) {
                     }
                 }
                 Err(e) => {
-                    log!([TAURI] => "Connection failed: {e}");
+                    log!([TAURI] => "[ERROR] Socket connection failed: {}", e);
                 }
             }
         }
     });
 }
 
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub async fn run() {
-    let settings = Settings::load().await.unwrap();
-    tauri::Builder::default()
+pub fn run() {
+    log!([TAURI] => "Application starting up...");
+
+    let mut builder = tauri::Builder::default();
+
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            log!([TAURI] => "[PID:{}][SI] Handler invoked; ARGV: {:?}", std::process::id(), argv);
+            if let Some(url) = argv.iter().find(|arg| arg.starts_with("wayclip://")) {
+                handle_deep_link(app, url);
+            }
+            
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }));
+    }
+
+    builder
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
+            log!([TAURI] => "Running setup hook...");
+            let store = app.store(".store.bin").unwrap();
+
             app.manage(AppState {
                 clips: Mutex::new(Vec::new()),
+                store: store.clone(),
+            });
+            log!([TAURI] => "App state managed.");
+            
+            let app_handle = app.handle().clone();
+
+            if let Ok(Some(urls)) = app.deep_link().get_current() {
+                 if let Some(first_url) = urls.first() {
+                    handle_deep_link(&app_handle, first_url.as_str());
+                }
+            }
+
+            let deep_link_handle = app.handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                if let Some(first_url) = event.urls().first() {
+                     handle_deep_link(&deep_link_handle, first_url.as_str());
+                }
             });
 
-            let app_handle = app.handle().clone();
+            #[cfg(any(windows, target_os = "linux"))]
+            {
+                if let Err(e) = app.deep_link().register_all() {
+                    log!([TAURI] => "[ERROR] Failed to register deep links: {:?}", e);
+                } else {
+                    log!([TAURI] => "Successfully registered deep link schemes for dev.");
+                }
+            }
+
+            let settings_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                log!([TAURI] => "Spawning task to load settings and start socket listener...");
+                let settings = Settings::load().await.unwrap();
+                log!([TAURI] => "Settings loaded successfully.");
+                setup_socket_listener(settings_handle, settings.gui_socket_path);
+            });
+            
+            let async_clips_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                log!([TAURI] => "Spawning background task: gather_clip_data");
                 let initial_clips_result = gather_clip_data(
                     Collect::All,
                     PullClipsArgs {
@@ -106,18 +197,26 @@ pub async fn run() {
                 .await;
 
                 if let Ok(paginated_clips) = initial_clips_result {
-                    let state = app_handle.state::<AppState>();
+                    let count = paginated_clips.clips.len();
+                    let state = async_clips_handle.state::<AppState>();
                     let mut clips = state.clips.lock().unwrap();
                     *clips = paginated_clips.clips;
+                    log!([TAURI] => "Background task 'gather_clip_data' finished. Loaded {} clips into state.", count);
+                } else {
+                    log!([TAURI] => "[ERROR] Background task 'gather_clip_data' failed.");
                 }
             });
 
             tauri::async_runtime::spawn(async move {
+                log!([TAURI] => "Spawning background task: generate_all_previews");
                 if let Err(e) = generate_all_previews().await {
-                    eprintln!("An error occurred during background preview generation: {e}",);
+                    log!([TAURI] => "[ERROR] An error occurred during background preview generation: {}", e);
+                } else {
+                    log!([TAURI] => "Background task 'generate_all_previews' completed.");
                 }
             });
 
+            log!([TAURI] => "Creating tray menu...");
             let name_item = MenuItem::with_id(app, "name", "Wayclip GUI", false, None::<&str>)?;
             let open_item = MenuItem::with_id(app, "open", "Open Wayclip", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit Wayclip", true, None::<&str>)?;
@@ -140,77 +239,85 @@ pub async fn run() {
                     &daemon_status_item,
                 ],
             )?;
+            log!([TAURI] => "Tray menu created.");
 
             let tray_menu = menu.clone();
 
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "open" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            window.show().unwrap();
-                            window.set_focus().unwrap();
-                            log!([TAURI] => "Open app");
+                .on_menu_event(|app, event| {
+                    match event.id.as_ref() {
+                        "open" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                                log!([TAURI] => "Main window shown and focused.");
+                            } else {
+                                log!([TAURI] => "[ERROR] Could not get main window to show.");
+                            }
                         }
-                        log!([TAURI] => "Open app")
-                    }
-                    "quit" => {
-                        log!([TAURI] => "Exiting app");
-                        app.exit(0);
-                    }
-                    "clip" => {
-                        log!([TAURI] => "Clip event recieved");
-
-                        if let Err(e) = std::process::Command::new("sh")
-                            .arg(WAYCLIP_TRIGGER_PATH)
-                            .spawn()
-                        {
-                            log!([TAURI] => "failed to run script: {:?}", e);
-                        } else {
-                            log!([TAURI] => "script launched");
+                        "quit" => {
+                            log!([TAURI] => "Quit event received. Exiting application.");
+                            app.exit(0);
                         }
-                    }
-                    _ => {
-                        log!([TAURI] => "Menu item {:?} not handled", event.id);
+                        "clip" => {
+                            log!([TAURI] => "Clip event received. Spawning trigger script.");
+                            if let Err(e) = std::process::Command::new("sh")
+                                .arg(WAYCLIP_TRIGGER_PATH)
+                                .spawn()
+                            {
+                                log!([TAURI] => "[ERROR] failed to run script: {:?}", e);
+                            } else {
+                                log!([TAURI] => "Trigger script launched successfully.");
+                            }
+                        }
+                        _ => {
+                            log!([TAURI] => "Menu item {:?} not handled", event.id);
+                        }
                     }
                 })
                 .show_menu_on_left_click(true)
                 .build(app)?;
+            log!([TAURI] => "Tray icon built and displayed.");
 
-            setup_socket_listener(app.handle().clone(), settings.gui_socket_path);
+            log!([TAURI] => "Setting up 'daemon-status-update' listener.");
+
+            let tray_menu_for_listener = tray_menu.clone();
             app.listen("daemon-status-update", move |event| {
-                let payload = event.payload();
-                log!([TAURI] => "Recieved message: {}", &payload);
-                match serde_json::from_str::<Payload>(payload) {
-                    Ok(p) => {
-                        if let Some(item) = tray_menu.get("daemon_status") {
-                            let new_text = format!("Status: {}", p.message);
-                            log!([TAURI] => "Setting item daemon_status: {}", &new_text);
-                            if let Err(e) = item.as_menuitem().unwrap().set_text(new_text) {
-                                log!([TAURI] => "Failed to update tray text: {e}");
+                let payload_str = event.payload();
+                log!([TAURI] => "Event 'daemon-status-update' received with payload: {:?}", payload_str);
+                    match serde_json::from_str::<Payload>(payload_str) {
+                        Ok(p) => {
+                            if let Some(item) = tray_menu_for_listener.get("daemon_status") {
+                                let new_text = format!("Status: {}", p.message);
+                                log!([TAURI] => "Setting tray item 'daemon_status' text to: '{}'", &new_text);
+                                if let Err(e) = item.as_menuitem().unwrap().set_text(new_text) {
+                                    log!([TAURI] => "[ERROR] Failed to update tray text: {}", e);
+                                }
                             }
                         }
-                    }
-                    Err(e) => {
-                        log!([TAURI] => "Failed to parse Payload JSON: {e}");
-                    }
+                        Err(e) => {
+                            log!([TAURI] => "[ERROR] Failed to parse Payload JSON: {}", e);
+                        }
                 }
             });
 
+            log!([TAURI] => "Setup hook completed.");
             Ok(())
         })
         .on_window_event(|app, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                log!([TAURI] => "Window close requested. Preventing close and hiding window.");
                 api.prevent_close();
                 if let Some(window) = app.get_webview_window("main") {
                     if let Err(e) = window.hide() {
-                        log!([TAURI] => "Failed to hide window: {e}");
+                        log!([TAURI] => "[ERROR] Failed to hide window: {}", e);
                     } else {
-                        log!([TAURI] => "Window hidden, app running in background");
+                        log!([TAURI] => "Window hidden, app running in background.");
                     }
                 } else {
-                    log!([TAURI] => "Main window not found");
+                    log!([TAURI] => "[ERROR] Main window not found on close request.");
                 }
             }
         })
@@ -222,8 +329,11 @@ pub async fn run() {
             commands::delete_clip,
             commands::like_clip,
             commands::rename_clip,
-            commands::get_all_audio_devices_command
+            commands::get_all_audio_devices_command,
+            auth::check_auth_status,
+            auth::get_me,
+            auth::logout
         ])
         .run(tauri::generate_context!())
-        .expect("Failed to run tauri");
+        .expect("Failed to run tauri application");
 }

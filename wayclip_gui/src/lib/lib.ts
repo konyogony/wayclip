@@ -1,5 +1,4 @@
-import { configDir } from '@tauri-apps/api/path';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import { readFile, BaseDirectory } from '@tauri-apps/plugin-fs';
 
 export const convertLength = (seconds: number): string => {
     const mins = Math.floor(seconds / 60);
@@ -33,10 +32,40 @@ export const convertSize = (bytes: number, decimals = 2): string => {
 
 export const getPreview = async (path: string): Promise<string> => {
     const previewName = path.split('/').pop() || '';
-    const cnfgDir = await configDir();
-    const previewPath = `${cnfgDir}/wayclip/previews/${previewName}`;
+    const previewPath = `wayclip/previews/${previewName}`;
 
-    return convertFileSrc(previewPath);
+    const fileBytes = await readFile(previewPath, { baseDir: BaseDirectory.Config });
+
+    const uint8Array = new Uint8Array(fileBytes);
+
+    const ext = previewName.split('.').pop()?.toLowerCase();
+    let mimeType = 'application/octet-stream';
+    if (ext === 'png') mimeType = 'image/png';
+    else if (ext === 'jpg' || ext === 'jpeg') mimeType = 'image/jpeg';
+    else if (ext === 'mp4') mimeType = 'video/mp4';
+    else if (ext === 'webm') mimeType = 'video/webm';
+
+    const blob = new Blob([uint8Array], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+
+    return url;
+};
+
+export const getVideo = async (path: string): Promise<string> => {
+    const fileBytes = await readFile(path);
+    const uint8Array = new Uint8Array(fileBytes);
+
+    const ext = path.split('.').pop()?.toLowerCase();
+    let mimeType = 'application/octet-stream';
+    if (ext === 'png') mimeType = 'image/png';
+    else if (ext === 'jpg' || ext === 'jpeg') mimeType = 'image/jpeg';
+    else if (ext === 'mp4') mimeType = 'video/mp4';
+    else if (ext === 'webm') mimeType = 'video/webm';
+
+    const blob = new Blob([uint8Array], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+
+    return url;
 };
 
 export const convertName = (input: string, mode: 'displayToStore' | 'storeToDisplay', defaultExt = '.mp4'): string => {

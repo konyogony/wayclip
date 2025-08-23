@@ -245,7 +245,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         audio/x-raw,rate=48000,channels=2 ! \
                         audioconvert ! audioresample ! mix.sink_0",
                     ));
-                    //                       queue max-size-buffers=8 ! audioconvert ! audioresample ! mix.sink_1",
+                    //queue max-size-buffers=8 ! audioconvert ! audioresample ! mix.sink_1",
                 }
                 Err(e) => {
                     log_to!(logger, Error, [GST] => "Could not find monitor source '{}': {}. Background audio will not be recorded.", settings.bg_node_name, e);
@@ -266,7 +266,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         audio/x-raw,rate=48000,channels=2 ! \
                         audioconvert ! audioresample ! mix.sink_1",
                     ));
-                    //                       queue max-size-buffers=8 ! audioconvert ! audioresample ! mix.sink_1",
+                    //queue max-size-buffers=8 ! audioconvert ! audioresample ! mix.sink_1",
                 }
                 Err(e) => {
                     log_to!(logger, Error, [GST] => "Could not find microphone source '{}': {}. Mic audio will not be recorded.", settings.mic_node_name, e);

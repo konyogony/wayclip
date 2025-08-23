@@ -24,7 +24,6 @@ import {
     DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from '@/components/animate-ui/radix/dropdown-menu';
-
 import { cn } from '@/lib/utils';
 import { memo, useMemo, useState, useCallback, useRef, useEffect } from 'react';
 import { FiPlay, FiHeart, FiMoreHorizontal, FiTrash, FiShare2 } from '@vertisanpro/react-icons/fi';
@@ -115,7 +114,10 @@ const ClipPreviewComponent = ({
     useEffect(() => {
         if (isVisible && !src) {
             getPreview(path)
-                .then(setSrc)
+                .then((src) => {
+                    console.log(src);
+                    setSrc(src);
+                })
                 .catch((e) => console.error(`Failed to load preview for ${path}: ${e}`));
         }
 

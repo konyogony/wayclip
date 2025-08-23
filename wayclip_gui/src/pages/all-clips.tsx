@@ -203,7 +203,7 @@ const AllClips = () => {
         }
 
         return (
-            <div className={cn('flex-grow overflow-y-auto p-8')}>
+            <div className={cn('flex-grow p-8')}>
                 {totalPages > 1 && (
                     <div className='mb-8 flex justify-center'>
                         <Pagination>
@@ -270,7 +270,7 @@ const AllClips = () => {
     };
 
     return (
-        <div className='flex flex-col w-full h-full bg-zinc-950 text-white'>
+        <div className='flex flex-col w-full  bg-zinc-950 text-white'>
             <div className='flex items-center gap-3 w-full border-b border-zinc-800 py-4 px-10 flex-shrink-0'>
                 <button
                     className='flex flex-row items-center cursor-pointer gap-2 w-fit h-fit justify-center transition-all duration-200 ease-in-out rounded-lg p-2 z-30 hover:bg-zinc-800/50'

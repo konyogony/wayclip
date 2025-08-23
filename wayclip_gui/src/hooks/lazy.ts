@@ -1,16 +1,19 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, RefObject } from 'react';
 
-export const useLazyLoad = <T extends HTMLElement>(): [React.RefObject<T>, boolean] => {
+export const useLazyLoad = <T extends HTMLElement>(): [RefObject<T | null>, boolean] => {
     const [inView, setInView] = useState(false);
-    const ref = useRef<T>(null);
+
+    const ref = useRef<T | null>(null);
 
     useEffect(() => {
+        const element = ref.current;
+
         const observer = new IntersectionObserver(
             ([entry]) => {
                 if (entry.isIntersecting) {
                     setInView(true);
-                    if (ref.current) {
-                        observer.unobserve(ref.current);
+                    if (element) {
+                        observer.unobserve(element);
                     }
                 }
             },
@@ -19,13 +22,13 @@ export const useLazyLoad = <T extends HTMLElement>(): [React.RefObject<T>, boole
             },
         );
 
-        if (ref.current) {
-            observer.observe(ref.current);
+        if (element) {
+            observer.observe(element);
         }
 
         return () => {
-            if (ref.current) {
-                observer.unobserve(ref.current);
+            if (element) {
+                observer.unobserve(element);
             }
         };
     }, []);

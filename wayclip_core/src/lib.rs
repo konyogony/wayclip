@@ -1,11 +1,18 @@
 use crate::logging::Logger;
 use crate::settings::Settings;
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use ashpd::desktop::{screencast::Screencast, Session};
+use base64::{engine::general_purpose, Engine as _};
 use chrono::{DateTime, Local};
 use dirs::{config_dir, home_dir};
+use ffmpeg_next::codec::Context as CodecContext;
+use ffmpeg_next::format::{input, Pixel};
+use ffmpeg_next::media::Type;
+use ffmpeg_next::software::scaling::{context::Context as SwsContext, flag::Flags};
+use ffmpeg_next::util::frame::video::Video;
 use futures::stream::{FuturesUnordered, StreamExt};
 use gstreamer::prelude::{Cast, ElementExt, GstObjectExt};
+use image::{ImageFormat, RgbImage};
 use mp4::Mp4Reader;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -14,6 +21,7 @@ use std::error::Error;
 use std::fmt;
 use std::fs::{remove_file, File};
 use std::io::BufReader;
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -21,6 +29,7 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
 use tokio::process::Command;
+use tokio::task;
 use tokio::task::JoinHandle;
 
 pub const DAEMON: &str = "\x1b[35m[daemon]\x1b[0m"; // magenta
@@ -34,6 +43,7 @@ pub const TAURI: &str = "\x1b[90m[tauri]\x1b[0m"; // gray
 pub const GSTBUS: &str = "\x1b[94m[gst-bus]\x1b[0m"; // bright blue
 pub const CLEANUP: &str = "\x1b[92m[cleanup]\x1b[0m"; // bright green
 pub const DEBUG: &str = "\x1b[93m[debug]\x1b[0m"; // idk
+pub const AUTH: &str = "\x1b[94m[auth]\x1b[0m"; // idk
 
 pub mod logging;
 pub mod ring;
@@ -870,4 +880,90 @@ pub async fn get_pipewire_node_id(
     let err_msg = format!("PipeWire node with name '{node_name}' not found");
     log_to!(logger, Error, [DAEMON] => "{}", err_msg);
     Err(err_msg.into())
+}
+
+pub async fn generate_frames<P: AsRef<Path>>(path: P, count: usize) -> Result<Vec<String>> {
+    ffmpeg_next::init().context("Failed to initialize ffmpeg")?;
+
+    let path = path.as_ref().to_owned();
+
+    let thumbnails = task::spawn_blocking(move || -> Result<Vec<String>> {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut ictx = input(&path).context("Failed to open input file")?;
+        let input_stream = ictx
+            .streams()
+            .best(Type::Video)
+            .ok_or_else(|| anyhow!("No video stream found in file"))?;
+        let video_stream_index = input_stream.index();
+
+        let mut decoder = CodecContext::from_parameters(input_stream.parameters())?
+            .decoder()
+            .video()?;
+
+        let duration = input_stream.duration();
+        let step = if count > 0 {
+            duration / count as i64
+        } else {
+            0
+        };
+
+        let mut frames_base64 = Vec::new();
+
+        let mut scaler = SwsContext::get(
+            decoder.format(),
+            decoder.width(),
+            decoder.height(),
+            Pixel::RGB24,
+            decoder.width(),
+            decoder.height(),
+            Flags::BILINEAR,
+        )?;
+
+        for i in 0..count {
+            let timestamp = (i as i64) * step;
+            ictx.seek(timestamp, ..)
+                .context("Failed to seek in video")?;
+
+            let decoded_frame_result: Option<Result<Video, anyhow::Error>> =
+                ictx.packets().find_map(|(stream, packet)| {
+                    if stream.index() == video_stream_index {
+                        if let Err(e) = decoder.send_packet(&packet) {
+                            return Some(Err(anyhow::Error::from(e)));
+                        }
+
+                        let mut decoded = Video::empty();
+                        if decoder.receive_frame(&mut decoded).is_ok() {
+                            return Some(Ok(decoded));
+                        }
+                    }
+                    None
+                });
+
+            let decoded = decoded_frame_result
+                .ok_or_else(|| anyhow!("Packet stream ended before a frame could be decoded"))??;
+
+            let mut rgb_frame = Video::empty();
+            scaler.run(&decoded, &mut rgb_frame)?;
+
+            let image_buffer = RgbImage::from_raw(
+                rgb_frame.width(),
+                rgb_frame.height(),
+                rgb_frame.data(0).to_vec(),
+            )
+            .ok_or_else(|| anyhow!("Failed to create image from raw frame data"))?;
+
+            let mut bytes = Cursor::new(Vec::new());
+            image_buffer.write_to(&mut bytes, ImageFormat::Png)?;
+            let b64 = general_purpose::STANDARD.encode(bytes.into_inner());
+            frames_base64.push(b64);
+        }
+        Ok(frames_base64)
+    })
+    .await
+    .context("Failed to join blocking task")??;
+
+    Ok(thumbnails)
 }
