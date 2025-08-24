@@ -44,7 +44,7 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Verify SQLx offline data is up-to-date
-        run: cargo sqlx prepare --check --workspace -- --exclude wayclip_gui
+        run: cargo install sqlx-cli && cargo sqlx prepare --check --workspace --exclude wayclip_gui
 
       - name: Run API tests
         run: cargo test --verbose -p wayclip_api
