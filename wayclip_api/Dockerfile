@@ -2,15 +2,19 @@ FROM rust:latest as builder
 
 WORKDIR /usr/src/app
 
-COPY ./Cargo.toml ./Cargo.lock ./
+COPY Cargo.toml Cargo.lock ./
+
+RUN mkdir ./wayclip_api && mkdir ./wayclip_core
+COPY wayclip_api/Cargo.toml ./wayclip_api/
+COPY wayclip_core/Cargo.toml ./wayclip_core/
+
 
 RUN mkdir -p ./wayclip_api/src && echo "fn main() {}" > ./wayclip_api/src/main.rs
-RUN mkdir -p ./wayclip_core/src && echo "fn main() {}" > ./wayclip_core/src/lib.rs 
+RUN mkdir -p ./wayclip_core/src && echo "fn main() {}" > ./wayclip_core/src/lib.rs
 
 RUN cargo build --release
-
-COPY ./wayclip_api ./wayclip_api
-COPY ./wayclip_core ./wayclip_core
+COPY ./wayclip_api/src ./wayclip_api/src
+COPY ./wayclip_core/src ./wayclip_core/src
 
 RUN cargo build --release -p wayclip-api
 
