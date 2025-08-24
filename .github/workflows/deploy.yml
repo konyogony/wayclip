@@ -22,6 +22,7 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v4
         with:
-          context: ./wayclip_api
+          context: .
+          file: ./wayclip_api/Dockerfile
           push: true
           tags: konyogonydev/wayclip-api:latest
