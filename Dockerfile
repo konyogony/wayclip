@@ -3,25 +3,33 @@ FROM rust:latest as builder
 WORKDIR /usr/src/app
 
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir -p wayclip_api wayclip_core
 COPY wayclip_api/Cargo.toml ./wayclip_api/
+COPY wayclip_cli/Cargo.toml ./wayclip_cli/
 COPY wayclip_core/Cargo.toml ./wayclip_core/
+COPY wayclip_gui/src-tauri/Cargo.toml ./wayclip_gui/src-tauri/
 
-RUN mkdir -p wayclip_api/src && echo "fn main() {}" > wayclip_api/src/main.rs
-RUN mkdir -p wayclip_core/src && echo "fn main() {}" > wayclip_core/src/lib.rs
+COPY .sqlx ./.sqlx
 
-RUN cargo build --release -p wayclip-api
+RUN mkdir -p ./wayclip_api/src && echo "fn main() {}" > ./wayclip_api/src/main.rs
+RUN mkdir -p ./wayclip_cli/src && echo "fn main() {}" > ./wayclip_cli/src/main.rs
+RUN mkdir -p ./wayclip_core/src && echo "pub fn lib() {}" > ./wayclip_core/src/lib.rs
+RUN mkdir -p ./wayclip_gui/src-tauri/src && echo "pub fn lib() {}" > ./wayclip_gui/src-tauri/src/lib.rs
+RUN cargo build --release
 
-COPY wayclip_api/src ./wayclip_api/src
-COPY wayclip_core/src ./wayclip_core/src
+COPY ./wayclip_api ./wayclip_api
+COPY ./wayclip_cli ./wayclip_cli
+COPY ./wayclip_core ./wayclip_core
+COPY ./wayclip_gui/src-tauri ./wayclip_gui/src-tauri
 
-RUN cargo build --release -p wayclip-api
+RUN cargo build --release -p wayclip_api
 
 FROM debian:buster-slim
 
-COPY ./wayclip_api/assets /usr/src/app/assets
-COPY ./wayclip_api/migrations /usr/src/app/migrations
+WORKDIR /usr/src/app
 
-COPY --from=builder /usr/src/app/target/release/wayclip-api /usr/local/bin/wayclip-api
+COPY ./wayclip_api/assets ./assets
+COPY ./wayclip_api/migrations ./migrations
 
-CMD ["wayclip-api"]
+COPY --from=builder /usr/src/app/target/release/wayclip_api /usr/local/bin/wayclip_api
+
+CMD ["wayclip_api"]
