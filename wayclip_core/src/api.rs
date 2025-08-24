@@ -1,17 +1,14 @@
-use crate::models::User;
+use crate::models::{HostedClipInfo, UserProfile};
 use crate::Settings;
 use anyhow::Result;
-use reqwest::{Client, StatusCode};
+use reqwest::{multipart, Client, Response, StatusCode};
 use serde::de::DeserializeOwned;
-use serde::Serialize;
+use std::error::Error;
 use std::fmt;
-
-const API_BASE_URL: &str = "http://127.0.0.1:8080";
-
-pub struct ApiClient {
-    client: Client,
-    auth_token: Option<String>,
-}
+use std::path::Path;
+use tokio::fs::File;
+use tokio_util::codec::{BytesCodec, FramedRead};
+use uuid::Uuid;
 
 #[derive(Debug)]
 pub enum ApiClientError {
@@ -20,6 +17,8 @@ pub enum ApiClientError {
     ApiError { status: u16, message: String },
     RequestError(reqwest::Error),
     SerializationError(serde_json::Error),
+    Io(std::io::Error),
+    Config(anyhow::Error),
 }
 
 impl fmt::Display for ApiClientError {
@@ -32,10 +31,29 @@ impl fmt::Display for ApiClientError {
             }
             ApiClientError::RequestError(e) => write!(f, "Request Error: {e}"),
             ApiClientError::SerializationError(e) => write!(f, "Serialization Error: {e}"),
+            ApiClientError::Io(e) => write!(f, "File I/O Error: {e}"),
+            ApiClientError::Config(e) => write!(f, "Configuration Error: {e}"),
         }
     }
 }
 
+impl Error for ApiClientError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            ApiClientError::RequestError(e) => Some(e),
+            ApiClientError::SerializationError(e) => Some(e),
+            ApiClientError::Io(e) => Some(e),
+            ApiClientError::Config(e) => Some(e.as_ref()),
+            _ => None,
+        }
+    }
+}
+
+impl From<anyhow::Error> for ApiClientError {
+    fn from(err: anyhow::Error) -> Self {
+        ApiClientError::Config(err)
+    }
+}
 impl From<reqwest::Error> for ApiClientError {
     fn from(err: reqwest::Error) -> Self {
         ApiClientError::RequestError(err)
@@ -46,73 +64,37 @@ impl From<serde_json::Error> for ApiClientError {
         ApiClientError::SerializationError(err)
     }
 }
-
-impl ApiClient {
-    pub fn new(auth_token: Option<String>) -> Self {
-        Self {
-            client: Client::new(),
-            auth_token,
-        }
+impl From<std::io::Error> for ApiClientError {
+    fn from(err: std::io::Error) -> Self {
+        ApiClientError::Io(err)
     }
+}
 
-    fn url(&self, path: &str) -> String {
-        format!("{API_BASE_URL}{path}")
-    }
-
-    pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, ApiClientError> {
-        let mut request = self.client.get(self.url(path));
-        if let Some(token) = &self.auth_token {
-            request = request.bearer_auth(token);
-        }
-        self.send_request(request).await
-    }
-
-    pub async fn post<T: DeserializeOwned, B: Serialize>(
-        &self,
-        path: &str,
-        body: B,
-    ) -> Result<T, ApiClientError> {
-        let mut request = self.client.post(self.url(path));
-        if let Some(token) = &self.auth_token {
-            request = request.bearer_auth(token);
-        }
-        self.send_request(request.json(&body)).await
-    }
-
-    async fn send_request<T: DeserializeOwned>(
-        &self,
-        request_builder: reqwest::RequestBuilder,
-    ) -> Result<T, ApiClientError> {
-        let response = request_builder.send().await?;
-
-        match response.status() {
-            StatusCode::OK | StatusCode::CREATED => Ok(response.json::<T>().await?),
-            StatusCode::UNAUTHORIZED => Err(ApiClientError::Unauthorized),
-            StatusCode::NOT_FOUND => Err(ApiClientError::NotFound),
-            status => {
-                let message = response
-                    .text()
-                    .await
-                    .unwrap_or_else(|_| "Could not retrieve error message.".to_string());
-                Err(ApiClientError::ApiError {
-                    status: status.as_u16(),
-                    message,
-                })
-            }
+async fn handle_response<T: DeserializeOwned>(response: Response) -> Result<T, ApiClientError> {
+    match response.status() {
+        StatusCode::OK | StatusCode::CREATED => Ok(response.json::<T>().await?),
+        StatusCode::UNAUTHORIZED => Err(ApiClientError::Unauthorized),
+        StatusCode::NOT_FOUND => Err(ApiClientError::NotFound),
+        status => {
+            let message = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Could not retrieve error message.".to_string());
+            Err(ApiClientError::ApiError {
+                status: status.as_u16(),
+                message,
+            })
         }
     }
 }
 
-pub async fn get_me(client: &ApiClient) -> Result<User, ApiClientError> {
-    client.get("/api/me").await
-}
-
-pub async fn share_clip(client: &ApiClient, clip_name: &str) -> Result<(), ApiClientError> {
-    let payload = serde_json::json!({ "name": clip_name });
-    client
-        .post::<serde_json::Value, _>("/api/share", payload)
-        .await?;
-    Ok(())
+pub async fn get_api_client() -> Result<Client, ApiClientError> {
+    let settings = Settings::load().await?;
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Some(token) = settings.auth_token {
+        headers.insert("Authorization", format!("Bearer {token}").parse().unwrap());
+    }
+    Ok(Client::builder().default_headers(headers).build()?)
 }
 
 pub async fn login(token: String) -> Result<()> {
@@ -129,22 +111,71 @@ pub async fn logout() -> Result<()> {
     Ok(())
 }
 
-pub async fn is_logged_in() -> Result<bool> {
+pub async fn get_current_user() -> Result<UserProfile, ApiClientError> {
+    let client = get_api_client().await?;
     let settings = Settings::load().await?;
-    Ok(settings.auth_token.is_some())
+    let response = client
+        .get(format!("{}/api/me", settings.api_url))
+        .send()
+        .await?;
+    handle_response(response).await
 }
 
-pub async fn get_api_client() -> Result<ApiClient> {
+pub async fn get_hosted_clips_index() -> Result<Vec<HostedClipInfo>, ApiClientError> {
+    let client = get_api_client().await?;
     let settings = Settings::load().await?;
-    Ok(ApiClient::new(settings.auth_token))
+    let response = client
+        .get(format!("{}/api/clips/index", settings.api_url))
+        .send()
+        .await?;
+    handle_response(response).await
 }
 
-pub async fn get_current_user() -> Result<User, ApiClientError> {
-    let client = get_api_client()
-        .await
-        .map_err(|e| ApiClientError::ApiError {
-            status: 500,
-            message: format!("Failed to load settings: {e}"),
-        })?;
-    get_me(&client).await
+pub async fn share_clip(client: &Client, clip_path: &Path) -> Result<String, ApiClientError> {
+    let settings = Settings::load().await?;
+    let file = File::open(clip_path).await?;
+    let file_name = clip_path.file_name().unwrap().to_str().unwrap().to_string();
+
+    let stream = FramedRead::new(file, BytesCodec::new());
+    let body = reqwest::Body::wrap_stream(stream);
+
+    let part = multipart::Part::stream(body).file_name(file_name);
+    let form = multipart::Form::new().part("video", part);
+
+    let response = client
+        .post(format!("{}/api/share", settings.api_url))
+        .multipart(form)
+        .send()
+        .await?;
+
+    let response_json: serde_json::Value = handle_response(response).await?;
+    let url = response_json["url"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    Ok(url)
+}
+
+pub async fn delete_clip(client: &Client, clip_id: Uuid) -> Result<(), ApiClientError> {
+    let settings = Settings::load().await?;
+    let response = client
+        .delete(format!("{}/api/clip/{}", settings.api_url, clip_id))
+        .send()
+        .await?;
+
+    match response.status() {
+        StatusCode::NO_CONTENT => Ok(()),
+        StatusCode::UNAUTHORIZED => Err(ApiClientError::Unauthorized),
+        StatusCode::NOT_FOUND => Err(ApiClientError::NotFound),
+        status => {
+            let message = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Could not retrieve error message.".to_string());
+            Err(ApiClientError::ApiError {
+                status: status.as_u16(),
+                message,
+            })
+        }
+    }
 }

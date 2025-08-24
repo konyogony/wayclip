@@ -1,4 +1,5 @@
 use crate::logging::Logger;
+use crate::models::UnifiedClipData;
 use crate::settings::Settings;
 use anyhow::{anyhow, Context, Result};
 use ashpd::desktop::{screencast::Screencast, Session};
@@ -537,10 +538,41 @@ pub async fn check_if_exists(path_str: &str) -> bool {
 }
 
 pub async fn delete_file(path_str: &str) -> Result<(), String> {
+    let data_json_path = Settings::config_path().join("wayclip").join("data.json");
+    let previews_path = Settings::config_path().join("wayclip").join("previews");
     let path = Path::new(path_str);
+
     if let Err(e) = fs::remove_file(path).await {
-        return Err(format!("Failed to delete file: {e}"));
+        log!([TAURI] => "Failed to delete main file '{}': {}", path.display(), e);
     }
+
+    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+        let preview_path = previews_path.join(format!("{stem}.mp4"));
+        if fs::try_exists(&preview_path).await.unwrap_or(false) {
+            if let Err(e) = fs::remove_file(&preview_path).await {
+                log!([TAURI] => "Failed to delete preview file '{}': {e}", preview_path.display());
+            }
+        }
+    }
+
+    if let Ok(json_str) = fs::read_to_string(&data_json_path).await {
+        if let Ok(mut json_val) = serde_json::from_str::<Value>(&json_str) {
+            if let Some(obj) = json_val.as_object_mut() {
+                if let Some(filename) = path.file_name().and_then(|s| s.to_str()) {
+                    obj.remove(filename);
+                }
+            }
+            if let Err(e) = fs::write(
+                &data_json_path,
+                serde_json::to_string_pretty(&json_val).unwrap(),
+            )
+            .await
+            {
+                log!([TAURI] => "Failed to write updated data.json after deletion: {}", e);
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -975,4 +1007,77 @@ pub async fn generate_frames<P: AsRef<Path>>(path: P, count: usize) -> Result<Ve
     .context("Failed to join blocking task")??;
 
     Ok(thumbnails)
+}
+
+pub async fn gather_unified_clips() -> Result<Vec<UnifiedClipData>> {
+    let hosted_clips_index = match api::get_hosted_clips_index().await {
+        Ok(index) => index
+            .into_iter()
+            .map(|c| (c.file_name, c.id))
+            .collect::<HashMap<_, _>>(),
+        Err(_) => HashMap::new(),
+    };
+
+    let local_clips = gather_clip_data(
+        Collect::All,
+        PullClipsArgs {
+            page: 1,
+            page_size: 999,
+            search_query: None,
+        },
+    )
+    .await?
+    .clips;
+
+    let mut unified_map: HashMap<String, UnifiedClipData> = HashMap::new();
+
+    for local_clip in local_clips {
+        let full_filename = Path::new(&local_clip.path)
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        unified_map.insert(
+            full_filename.clone(),
+            UnifiedClipData {
+                name: local_clip.name,
+                full_filename,
+                local_path: Some(local_clip.path),
+                local_data: Some(ClipJsonData {
+                    tags: local_clip.tags,
+                    liked: local_clip.liked,
+                }),
+                created_at: local_clip.created_at,
+                is_hosted: false,
+                hosted_id: None,
+            },
+        );
+    }
+
+    for (filename, hosted_id) in hosted_clips_index {
+        if let Some(existing_clip) = unified_map.get_mut(&filename) {
+            existing_clip.is_hosted = true;
+            existing_clip.hosted_id = Some(hosted_id);
+        } else {
+            let name_without_ext = filename
+                .strip_suffix(".mp4")
+                .unwrap_or(&filename)
+                .to_string();
+            unified_map.insert(
+                filename.clone(),
+                UnifiedClipData {
+                    name: name_without_ext,
+                    full_filename: filename,
+                    local_path: None,
+                    local_data: None,
+                    created_at: Local::now(),
+                    is_hosted: true,
+                    hosted_id: Some(hosted_id),
+                },
+            );
+        }
+    }
+
+    Ok(unified_map.into_values().collect())
 }

@@ -1,19 +1,23 @@
 use crate::auth::{handle_login, handle_logout};
 use crate::list::handle_list;
+use crate::manage::handle_manage;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use colored::*;
-use inquire::{Select, Text};
+use inquire::{Confirm, Text};
 use std::env;
+use std::path::Path;
 use std::process::ExitCode;
 use tokio::process::Command;
 use wayclip_core::control::DaemonManager;
 use wayclip_core::{
-    Collect, PullClipsArgs, WAYCLIP_TRIGGER_PATH, api, gather_clip_data, settings::Settings,
+    Collect, PullClipsArgs, WAYCLIP_TRIGGER_PATH, api, delete_file, gather_clip_data,
+    rename_all_entries, settings::Settings,
 };
 
 pub mod auth;
 pub mod list;
+pub mod manage;
 
 #[derive(Parser)]
 #[command(
@@ -112,8 +116,8 @@ async fn run() -> Result<()> {
         Commands::Manage => handle_manage().await?,
         Commands::Config { editor } => handle_config(editor.as_deref()).await?,
         Commands::View { name, player } => handle_view(name, player.as_deref()).await?,
-        Commands::Rename { name } => println!("Renaming clip: {name}"),
-        Commands::Delete { name } => println!("Deleting clip: {name}"),
+        Commands::Rename { name } => handle_rename(name).await?,
+        Commands::Delete { name } => handle_delete(name).await?,
         Commands::Edit { .. } => println!("Editing clip..."),
         Commands::Daemon { action } => {
             let manager = DaemonManager::new();
@@ -131,88 +135,33 @@ async fn run() -> Result<()> {
     Ok(())
 }
 
-async fn handle_manage() -> Result<()> {
-    loop {
-        let mut clips = gather_clip_data(
-            Collect::All,
-            PullClipsArgs {
-                page: 1,
-                page_size: 100,
-                search_query: None,
-            },
-        )
-        .await?
-        .clips;
-
-        if clips.is_empty() {
-            println!("{}", "No clips found to manage.".yellow());
-            return Ok(());
-        }
-
-        clips.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-
-        let mut clip_options: Vec<String> = clips.iter().map(|c| c.name.clone()).collect();
-        clip_options.insert(0, "[Quit]".to_string());
-
-        let selected_clip_name = Select::new("Select a clip to manage:", clip_options).prompt()?;
-
-        if selected_clip_name == "[Quit]" {
-            break;
-        }
-
-        let options = vec![
-            "▷ View",
-            "✎ Rename",
-            "✗ Delete",
-            "⎘ Copy Name",
-            "← Back to List",
-        ];
-        let action = Select::new(
-            &format!("Action for '{}':", selected_clip_name.cyan()),
-            options,
-        )
-        .prompt()?;
-
-        match action {
-            "▷ View" => {
-                handle_view(&selected_clip_name, None).await?;
-            }
-            "✎ Rename" => {
-                let new_name = Text::new("Enter new name:").prompt()?;
-                println!("Renaming '{selected_clip_name}' to '{new_name}' (Not yet implemented)",);
-            }
-            "✗ Delete" => {
-                println!("Deleting '{selected_clip_name}' (Not yet implemented)");
-            }
-            "⎘ Copy Name" => {
-                let mut clipboard = arboard::Clipboard::new()?;
-                clipboard.set_text(&selected_clip_name)?;
-                println!("{}", "✔ Name copied to clipboard!".green());
-            }
-            _ => continue,
-        }
-        println!();
-    }
-    Ok(())
-}
-
 async fn handle_me() -> Result<()> {
     match api::get_current_user().await {
-        Ok(user) => {
+        Ok(profile) => {
+            let usage_gb = profile.storage_used as f64 / 1_073_741_824.0;
+            let limit_gb = profile.storage_limit as f64 / 1_073_741_824.0;
+            let percentage = if profile.storage_limit > 0 {
+                (usage_gb / limit_gb) * 100.0
+            } else {
+                0.0
+            };
+
             println!("{}", "┌─ Your Profile ─────────".bold());
-            println!("│ {} {}", "Username:".cyan(), user.username);
-            println!("│ {} {}", "User ID:".cyan(), user.id);
+            println!("│ {} {}", "Username:".cyan(), profile.user.username);
             println!(
                 "│ {} {}",
                 "Tier:".cyan(),
-                format!("{:?}", user.tier).green()
+                format!("{:?}", profile.user.tier).green()
             );
+            println!("│ {} {}", "Hosted Clips:".cyan(), profile.clip_count);
             println!(
-                "│ {} {}",
-                "Member Since:".cyan(),
-                user.created_at.format("%Y-%m-%d")
+                "│ {} {:.2} GB / {:.2} GB ({:.1}%)",
+                "Storage:".cyan(),
+                usage_gb,
+                limit_gb,
+                percentage
             );
-            println!("{}", "└────────────────────────".bold());
+            println!("└────────────────────────");
         }
         Err(api::ApiClientError::Unauthorized) => {
             bail!("You are not logged in. Please run `wayclip login` first.");
@@ -225,10 +174,46 @@ async fn handle_me() -> Result<()> {
 }
 
 async fn handle_share(clip_name: &str) -> Result<()> {
-    println!("Attempting to share clip: '{clip_name}'...");
+    println!("{}", "○ Preparing to share...".cyan());
+
+    let profile = api::get_current_user()
+        .await
+        .context("Could not get user profile. Are you logged in?")?;
+    let settings = Settings::load().await?;
+    let clips_path = Settings::home_path().join(&settings.save_path_from_home_string);
+
+    let clip_path = if clip_name.ends_with(".mp4") {
+        clips_path.join(clip_name)
+    } else {
+        clips_path.join(format!("{}.mp4", clip_name))
+    };
+
+    if !clip_path.exists() {
+        bail!("Clip '{}' not found locally.", clip_name);
+    }
+
+    let file_size = tokio::fs::metadata(&clip_path).await?.len() as i64;
+    let available_storage = profile.storage_limit - profile.storage_used;
+
+    if file_size > available_storage {
+        bail!(
+            "Upload rejected: File size ({:.2} MB) exceeds your available storage ({:.2} MB).",
+            file_size as f64 / 1_048_576.0,
+            available_storage as f64 / 1_048_576.0
+        );
+    }
+
+    println!(
+        "{}",
+        "◌ Uploading clip... (this may take a moment)".yellow()
+    );
+
     let client = api::get_api_client().await?;
-    match api::share_clip(&client, clip_name).await {
-        Ok(_) => println!("{}", "✔ Clip shared successfully! (Placeholder)".green()),
+    match api::share_clip(&client, &clip_path).await {
+        Ok(url) => {
+            println!("{}", "✔ Clip shared successfully!".green().bold());
+            println!("  Public URL: {}", url.underline());
+        }
         Err(api::ApiClientError::Unauthorized) => {
             bail!("You must be logged in to share clips. Please run `wayclip login`.");
         }
@@ -293,12 +278,94 @@ async fn handle_view(name: &str, player: Option<&str>) -> Result<()> {
     let mut command = Command::new(parts.next().unwrap_or("mpv"));
     command.args(parts);
     command.arg(clip_file);
-    let status = command
-        .status()
-        .await
+    let mut child = command
+        .spawn()
         .context(format!("Failed to launch media player '{player_name}'"))?;
-    if !status.success() {
-        bail!("Media player process failed with status: {}", status);
+
+    let _ = child.wait().await;
+    Ok(())
+}
+
+async fn handle_rename(name: &str) -> Result<()> {
+    let clips = gather_clip_data(
+        Collect::All,
+        PullClipsArgs {
+            page: 1,
+            page_size: 999,
+            search_query: Some(name.to_string()),
+        },
+    )
+    .await?
+    .clips;
+
+    let clip_to_rename = clips.first().context(format!("Clip '{name}' not found."))?;
+
+    let new_name_stem = Text::new("Enter new name (without extension):")
+        .with_initial_value(&clip_to_rename.name)
+        .prompt()?;
+
+    if new_name_stem.is_empty() || new_name_stem == clip_to_rename.name {
+        println!("{}", "Rename cancelled.".yellow());
+        return Ok(());
     }
+
+    let extension = Path::new(&clip_to_rename.path)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("mp4");
+    let new_full_name = format!("{}.{}", new_name_stem, extension);
+
+    match rename_all_entries(&clip_to_rename.path, &new_full_name).await {
+        Ok(_) => println!("{}", format!("✔ Renamed to '{}'", new_full_name).green()),
+        Err(e) => bail!("Failed to rename: {}", e),
+    }
+    Ok(())
+}
+
+async fn handle_delete(name: &str) -> Result<()> {
+    let clips = gather_clip_data(
+        Collect::All,
+        PullClipsArgs {
+            page: 1,
+            page_size: 999,
+            search_query: Some(name.to_string()),
+        },
+    )
+    .await?
+    .clips;
+
+    let clip_to_delete = clips.first().context(format!("Clip '{name}' not found."))?;
+
+    let hosted_clips = api::get_hosted_clips_index().await.unwrap_or_default();
+    let clip_filename = Path::new(&clip_to_delete.path)
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let hosted_info = hosted_clips.iter().find(|c| c.file_name == clip_filename);
+
+    println!("Preparing to delete '{}'.", name.cyan());
+
+    if let Some(hosted) = hosted_info {
+        let confirmed = Confirm::new("This clip is hosted on the server. Delete the server copy?")
+            .with_default(true)
+            .prompt()?;
+        if confirmed {
+            let client = api::get_api_client().await?;
+            api::delete_clip(&client, hosted.id).await?;
+            println!("{}", "✔ Server copy deleted.".green());
+        }
+    }
+
+    let confirmed_local = Confirm::new("Delete the local file? This cannot be undone.")
+        .with_default(false)
+        .prompt()?;
+    if confirmed_local {
+        delete_file(&clip_to_delete.path)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
+        println!("{}", "✔ Local file deleted.".green());
+    }
+
     Ok(())
 }

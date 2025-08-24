@@ -9,7 +9,7 @@ use actix_web::{
 use oauth2::reqwest::async_http_client;
 use oauth2::{AuthorizationCode, CsrfToken, RedirectUrl, Scope, TokenResponse};
 use uuid::Uuid;
-use wayclip_core::models::{GitHubUser, User};
+use wayclip_core::models::{GitHubUser, User, UserProfile};
 
 #[derive(serde::Deserialize)]
 pub struct AuthLoginQuery {
@@ -149,17 +149,40 @@ async fn github_callback(
     }
 }
 
+#[get("/me")]
 pub async fn get_me(req: HttpRequest) -> impl Responder {
     if let Some(user_id) = req.extensions().get::<Uuid>() {
         let data: &web::Data<AppState> = req.app_data().unwrap();
-        match sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1")
-            .bind(user_id)
+
+        let user = match sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1")
+            .bind(*user_id)
             .fetch_one(&data.db_pool)
             .await
         {
-            Ok(user) => HttpResponse::Ok().json(user),
-            Err(_) => HttpResponse::NotFound().body("User not found"),
-        }
+            Ok(user) => user,
+            Err(_) => return HttpResponse::NotFound().body("User not found"),
+        };
+
+        let stats = match sqlx::query!(
+            "SELECT COALESCE(SUM(file_size), 0)::BIGINT as total_size, COUNT(*) as clip_count FROM clips WHERE user_id = $1",
+            user_id
+        )
+        .fetch_one(&data.db_pool)
+        .await {
+            Ok(s) => s,
+            Err(_) => return HttpResponse::InternalServerError().body("Could not fetch user stats"),
+        };
+
+        let storage_limit = data.tier_limits.get(&user.tier).cloned().unwrap_or(0);
+
+        let user_profile = UserProfile {
+            user,
+            storage_used: stats.total_size.unwrap_or(0),
+            storage_limit,
+            clip_count: stats.clip_count.unwrap_or(0),
+        };
+
+        HttpResponse::Ok().json(user_profile)
     } else {
         HttpResponse::Unauthorized().finish()
     }

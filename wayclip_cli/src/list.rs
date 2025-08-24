@@ -92,7 +92,7 @@ pub async fn handle_list(command: &Commands) -> Result<()> {
             let mut meta = Vec::new();
             if clip.liked {
                 meta.push("♥".to_string());
-            } // Replaced emoji with simpler heart
+            }
             if !clip.tags.is_empty() {
                 meta.push(format!(
                     "[{}]",

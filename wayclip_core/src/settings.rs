@@ -10,6 +10,7 @@ use tokio::fs;
 
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 pub struct Settings {
+    pub api_url: String,
     pub auth_token: Option<String>,
     pub clip_name_formatting: String,
     pub clip_length_s: u64,
@@ -37,6 +38,7 @@ impl Settings {
     pub async fn new() -> Result<Self> {
         let (default_source, default_sink) = get_default_audio_devices().await.unwrap_or_default();
         Ok(Self {
+            api_url: String::from("http://127.0.0.1:8080"),
             auth_token: None,
             mic_node_name: default_source.unwrap_or_default(),
             bg_node_name: default_sink.unwrap_or_default(),
@@ -70,7 +72,7 @@ impl Settings {
     }
 
     async fn create_and_save_new() -> Result<Self> {
-        log!([DEBUG] => "Creating and saving new default settings.");
+        // log!([DEBUG] => "Creating and saving new default settings.");
         let settings = Self::new().await?;
         settings
             .save()
@@ -87,7 +89,7 @@ impl Settings {
             return Self::create_and_save_new().await;
         }
 
-        log!([DEBUG] => "Found settings file at: {:?}", path);
+        // log!([DEBUG] => "Found settings file at: {:?}", path);
         let data = fs::read_to_string(&path)
             .await
             .context("Failed to read existing settings file")?;
@@ -116,12 +118,12 @@ impl Settings {
         let default_keys: HashSet<_> = default_map.keys().cloned().collect();
 
         if saved_keys == default_keys {
-            log!([DEBUG] => "Settings file is up-to-date. Loading directly.");
+            //     log!([DEBUG] => "Settings file is up-to-date. Loading directly.");
             return serde_json::from_value(saved_value)
                 .context("Failed to deserialize up-to-date settings");
         }
 
-        log!([DEBUG] => "Settings file is outdated or has extra keys. Merging with defaults.");
+        // log!([DEBUG] => "Settings file is outdated or has extra keys. Merging with defaults.");
 
         let default_map_mut = default_value.as_object_mut().unwrap();
 
@@ -160,6 +162,9 @@ impl Settings {
         let mut settings = Self::load().await.map_err(|e| e.to_string())?;
 
         match key {
+            "api_url" => {
+                settings.api_url = Self::get_str(&value)?;
+            }
             "auth_token" => {
                 settings.auth_token = Some(Self::get_str(&value)?);
             }
