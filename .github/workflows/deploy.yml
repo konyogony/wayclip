@@ -27,7 +27,8 @@ jobs:
             libwebkitgtk-6.0-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
-            patchelf
+            patchelf \
+            libpipewire-0.3-dev
 
       - name: Install sqlx-cli
         run: cargo install sqlx-cli
