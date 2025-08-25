@@ -46,7 +46,7 @@ jobs:
       - name: Verify SQLx offline data is up-to-date
         run: |
           cargo install sqlx-cli --force
-          cargo sqlx prepare --check -- --workspace --exclude wayclip_gui
+          cargo sqlx prepare --workspace --check -- --workspace --exclude wayclip_gui
 
       - name: Run API tests
         run: cargo test --verbose -p wayclip_api
