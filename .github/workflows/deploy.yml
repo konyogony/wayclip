@@ -19,16 +19,21 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Install FFmpeg dependencies
-        run: sudo apt-get update && sudo apt-get install -y \
-          pkg-config \
-          libavcodec-dev \
-          libavformat-dev \
-          libavutil-dev \
-          libavfilter-dev \
-          libavdevice-dev \
-          libswscale-dev \
-          libswresample-dev
+      - name: Enable FFmpeg repo and install dependencies
+        run: |
+          sudo add-apt-repository universe
+          sudo add-apt-repository multiverse
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            ffmpeg \
+            libavcodec-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libavfilter-dev \
+            libavdevice-dev \
+            libswscale-dev \
+            libswresample-dev
 
       - name: Install All System Dependencies
         run: |
