@@ -1,26 +1,24 @@
 {
-  "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "default",
-  "description": "Capability for the main window",
-  "windows": [
-    "main"
-  ],
-  "permissions": [
-    "core:default",
-    "opener:default",
-    "core:window:allow-start-dragging",
-    "core:window:allow-close",
-    "opener:default",
-    "opener:allow-reveal-item-in-dir",
-    "fs:default",
-    "fs:allow-app-read",
-    "fs:allow-home-read-recursive",
-    "fs:allow-config-read-recursive",
-    "fs:scope-home-index",
-    "fs:scope-appconfig-recursive",
-    "deep-link:default",
-    "shell:default",
-    "shell:allow-open",
-    "store:default"
-  ]
+    "$schema": "../gen/schemas/desktop-schema.json",
+    "identifier": "default",
+    "description": "Capability for the main window",
+    "windows": ["main"],
+    "permissions": [
+        "core:default",
+        "opener:default",
+        "core:window:allow-start-dragging",
+        "core:window:allow-close",
+        "opener:default",
+        "opener:allow-reveal-item-in-dir",
+        "fs:default",
+        "fs:allow-app-read",
+        "fs:allow-home-read-recursive",
+        "fs:allow-config-read-recursive",
+        "fs:scope-home-index",
+        "fs:scope-appconfig-recursive",
+        "shell:default",
+        "shell:allow-open",
+        "store:default"
+    ]
 }
+

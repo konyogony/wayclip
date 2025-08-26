@@ -2,7 +2,8 @@ use crate::AppState;
 use std::sync::Arc;
 use tauri::{command, AppHandle, Emitter, State, Wry};
 use tauri_plugin_store::{Error as StoreError, Store, StoreBuilder};
-use wayclip_core::log; // Assuming your log macro is accessible from here
+use wayclip_core::log;
+use wayclip_core::models::UserProfile;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct UserData {
@@ -61,15 +62,23 @@ pub async fn get_me(app_handle: AppHandle<Wry>) -> Result<UserData, String> {
     log!([AUTH] => "API request to /api/me completed with status: {}", status);
 
     if status.is_success() {
-        let user_data = response.json::<UserData>().await.map_err(|e| {
-            let err_msg = format!("Failed to parse user data: {e}");
+        let user_profile = response.json::<UserProfile>().await.map_err(|e| {
+            let err_msg = format!("Failed to parse user profile data: {e}");
             log!([AUTH] => "[ERROR] {}", err_msg);
             err_msg
         })?;
-        log!([AUTH] => "Successfully fetched and parsed user data for user: {}", user_data.username);
+
+        log!([AUTH] => "Successfully fetched and parsed user profile for user: {}", user_profile.user.username);
+
+        let user_data = UserData {
+            id: user_profile.user.id,
+            username: user_profile.user.username,
+            avatar_url: user_profile.user.avatar_url,
+        };
+
         Ok(user_data)
     } else {
-        let err_msg = format!("API request failed with status: {}", status);
+        let err_msg = format!("API request failed with status: {status}");
         log!([AUTH] => "[ERROR] {}", err_msg);
         Err(err_msg)
     }

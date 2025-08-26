@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::os::unix::{fs::FileTypeExt, net::UnixListener};
 use std::sync::{Arc, Mutex};
 use tauri::{
@@ -6,12 +6,13 @@ use tauri::{
     tray::TrayIconBuilder,
     AppHandle, Emitter, Manager, Wry, Listener
 };
-use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_store::{Store, StoreExt};
 use wayclip_core::{
     gather_clip_data, generate_all_previews, log, settings::Settings, ClipData, Collect, Payload,
     PullClipsArgs, WAYCLIP_TRIGGER_PATH,
 };
+
+pub const DEEP_LINK_SOCKET_PATH: &str = "/tmp/wayclip_deep_link.sock";
 
 pub mod auth;
 pub mod commands;
@@ -115,66 +116,74 @@ fn setup_socket_listener(app: AppHandle<Wry>, socket_path: String) {
 }
 
 
+
+fn setup_deep_link_listener(app: AppHandle<Wry>) {
+    let socket_path = DEEP_LINK_SOCKET_PATH;
+
+    // Clean up old socket file from a crash
+    if std::fs::metadata(socket_path).is_ok() {
+        let _ = std::fs::remove_file(socket_path);
+    }
+
+    let listener = match UnixListener::bind(socket_path) {
+        Ok(listener) => listener,
+        Err(e) => {
+            log!([TAURI] => "[CRITICAL_ERROR] Could not bind deep link socket: {}. Deep links will not work.", e);
+            return;
+        }
+    };
+
+    // This thread will own the listener and handle incoming connections.
+    std::thread::spawn(move || {
+        log!([TAURI] => "Deep link listener thread started at {}", socket_path);
+        for stream in listener.incoming() {
+            match stream {
+                Ok(mut stream) => {
+                    let mut url = String::new();
+                    if stream.read_to_string(&mut url).is_ok() && !url.is_empty() {
+                        log!([TAURI] => "Received deep link via socket: {}", url);
+                        
+                        // Process the URL
+                        handle_deep_link(&app, &url);
+
+                        // Bring the window to the front
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.unminimize();
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                }
+                Err(err) => {
+                    log!([TAURI] => "[ERROR] Deep link socket connection error: {}", err);
+                }
+            }
+        }
+    });
+}
+
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     log!([TAURI] => "Application starting up...");
 
-    let mut builder = tauri::Builder::default();
 
-    #[cfg(desktop)]
-    {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            log!([TAURI] => "[PID:{}][SI] Handler invoked; ARGV: {:?}", std::process::id(), argv);
-            if let Some(url) = argv.iter().find(|arg| arg.starts_with("wayclip://")) {
-                handle_deep_link(app, url);
-            }
-            
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-            }
-        }));
-    }
-
-    builder
-        .plugin(tauri_plugin_deep_link::init())
+    tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
             log!([TAURI] => "Running setup hook...");
-            let store = app.store(".store.bin").unwrap();
 
+            setup_deep_link_listener(app.handle().clone());
+
+            let store = app.store(".store.bin").unwrap();
             app.manage(AppState {
                 clips: Mutex::new(Vec::new()),
                 store: store.clone(),
             });
             log!([TAURI] => "App state managed.");
             
-            let app_handle = app.handle().clone();
-
-            if let Ok(Some(urls)) = app.deep_link().get_current() {
-                 if let Some(first_url) = urls.first() {
-                    handle_deep_link(&app_handle, first_url.as_str());
-                }
-            }
-
-            let deep_link_handle = app.handle().clone();
-            app.deep_link().on_open_url(move |event| {
-                if let Some(first_url) = event.urls().first() {
-                     handle_deep_link(&deep_link_handle, first_url.as_str());
-                }
-            });
-
-            #[cfg(any(windows, target_os = "linux"))]
-            {
-                if let Err(e) = app.deep_link().register_all() {
-                    log!([TAURI] => "[ERROR] Failed to register deep links: {:?}", e);
-                } else {
-                    log!([TAURI] => "Successfully registered deep link schemes for dev.");
-                }
-            }
-
             let settings_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 log!([TAURI] => "Spawning task to load settings and start socket listener...");

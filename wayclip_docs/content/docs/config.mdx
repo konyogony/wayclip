@@ -1,0 +1,79 @@
+---
+title: Configuration
+description: Learn to configure wayclip
+---
+import { Highlight } from 'fumadocs';
+
+# Wayclip Settings Guide
+
+Wayclip allows you to customize how the app records and saves clips, controls audio, and interacts with the GUI and CLI. This page walks you through the main settings you can configure.
+
+## Config File Location
+
+Wayclip stores its configuration in a JSON file. The default path is:
+
+<Highlight code="~/.config/wayclip/settings.json" lang="text" />
+
+> On some systems, if the config directory is not available, Wayclip will use the current folder (`.`) instead.
+
+You can also save clips relative to your home directory, e.g., `Videos/wayclip`. All paths are automatically resolved from your home folder unless specified otherwise.
+
+## GUI Settings
+
+Inside the Wayclip app (GUI), you can configure:
+
+- **Save Shortcut** – Quickly save a clip without leaving the app. Default: `Alt+C`.
+- **Open GUI Shortcut** – Opens the Wayclip GUI from anywhere. Default: `Ctrl+Alt+C`.
+- **Toggle Notifications** – Enable or disable notifications when clips are saved.
+
+These are the main user-facing GUI options, and you can update them directly through the app interface.
+
+## CLI (`wayclip-cli`) Settings
+
+The CLI uses the same configuration file as the GUI. Key options include:
+
+- **API URL** – The server endpoint for clip uploads. Default: `http://127.0.0.1:8080`.
+- **Auth Token** – Optional token for authentication.
+- **Daemon PID & Socket Paths** – Control where the background process runs and how it communicates:
+
+<Highlight code={`/tmp/wayclipd.pid
+/tmp/wayclipd.sock
+/tmp/wayclipg.sock`} lang="text" />
+
+> You usually don’t need to change these unless you are running multiple instances.
+
+- **Update Settings** – You can update individual settings via the CLI by specifying a key and value, e.g., `wayclip-cli set clip_length_s 180`.
+
+## Clip Recording Settings
+
+These settings control how your recordings are captured:
+
+- **Clip Name Format** – Determines the naming convention for saved clips. Default: `%Y-%m-%d_%H-%M-%S`.
+- **Clip Length** – Default duration in seconds. Default: `120`.
+- **Resolution & FPS** – Choose your video quality. Default: `1920x1080 @ 60 FPS`.
+- **Video & Audio Codec** – Default: `h264` (video) and `aac` (audio).
+- **Video Bitrate** – Default: `15000 kbps`.
+
+## Audio Settings
+
+Wayclip lets you include microphone and background audio in your clips:
+
+- **Mic Node Name & Background Node Name** – Select your default audio input/output devices. By default, Wayclip uses your system’s default devices.
+- **Mic & Background Volume** – Mic: 100%, Background: 75%.
+- **Include Mic Audio / Include Background Audio** – Enable or disable specific audio tracks in your clips.
+
+## Advanced / Developer Settings
+
+Mostly for developers or power users:
+
+- **Custom Paths** – Override default save paths using relative paths from your home directory.
+- **Merging Old Settings** – Wayclip automatically merges new default settings with any existing configuration, ignoring unknown keys.
+- **Serialization** – Settings are automatically saved in JSON format and reloaded on app start.
+
+## Quick Tips
+
+- If Wayclip fails to load a settings file, it will create a new one with default values.
+- Be careful when editing `settings.json` manually — unknown keys are ignored, but invalid formats may reset your settings.
+- GUI and CLI always share the same configuration, so updates in one reflect in the other.
+
+> With these settings, you can fine-tune how Wayclip captures, names, and saves your clips while controlling audio and shortcuts to match your workflow.

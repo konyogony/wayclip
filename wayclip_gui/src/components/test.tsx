@@ -16,7 +16,6 @@ export const Test = () => {
     const [error, setError] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(true);
 
-    // Effect for auth initialization and listening to backend events
     useEffect(() => {
         console.log('Auth effect mounted.');
         let unlisten: (() => void) | undefined;
@@ -24,18 +23,16 @@ export const Test = () => {
         const initializeAuth = async () => {
             console.log('Initializing authentication...');
             try {
-                // Listen for auth state changes from the Rust backend
                 unlisten = await listen<boolean>('auth-state-changed', (event) => {
                     console.log(`[EVENT] 'auth-state-changed' received. Payload: ${event.payload}`);
                     setIsLoggedIn(event.payload);
                     if (!event.payload) {
                         console.log('User logged out, clearing user data.');
-                        setUserData(null); // Clear user data on logout
+                        setUserData(null);
                     }
                 });
                 console.log("Listener for 'auth-state-changed' is active.");
 
-                // Check the initial authentication status
                 console.log("Invoking 'check_auth_status' for initial status...");
                 const initialStatus = await invoke<boolean>('check_auth_status');
                 console.log(`Initial auth status is: ${initialStatus}`);
@@ -57,7 +54,6 @@ export const Test = () => {
         };
     }, []);
 
-    // Effect to fetch user data when the user is logged in
     useEffect(() => {
         console.log(`User data effect triggered. isLoggedIn: ${isLoggedIn}`);
         if (isLoggedIn) {
@@ -70,7 +66,7 @@ export const Test = () => {
                 .catch((err) => {
                     console.error('Failed to fetch user data:', err);
                     setError('Your session might be invalid. Please try logging in again.');
-                    setIsLoggedIn(false); // Token is likely invalid, force logout
+                    setIsLoggedIn(false);
                 });
         } else {
             console.log('User is not logged in, skipping fetch for user data.');
@@ -80,7 +76,11 @@ export const Test = () => {
     const loginWithGitHub = async () => {
         console.log('loginWithGitHub button clicked.');
         setError(null);
-        const authUrl = `http://127.0.0.1:8080/auth/github?client=tauri`;
+        // The API server requires its own callback URL for the OAuth token exchange.
+        const callbackUrl = 'http://127.0.0.1:8080/auth/callback';
+        const authUrl = `http://127.0.0.1:8080/auth/github?client=tauri&redirect_uri=${encodeURIComponent(
+            callbackUrl,
+        )}`;
         try {
             console.log(`Opening external auth URL: ${authUrl}`);
             await open(authUrl);
