@@ -1,7 +1,7 @@
 FROM rust:latest AS builder
 
 RUN apt-get update && apt-get install -y \
-    build-essential pkg-config libssl-dev libpq-dev ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
+    build-essential pkg-config libssl-dev libpq-dev ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libwayland-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /usr/src/app
