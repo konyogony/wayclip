@@ -1,16 +1,21 @@
 FROM rust:latest AS builder
 
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     pkg-config \
+    clang \
+    libclang-dev \
     libssl-dev \
     libpq-dev \
+    libssh2-1-dev \
     ffmpeg \
     libavcodec-dev \
     libavformat-dev \
     libavutil-dev \
     libswscale-dev \
     libavfilter-dev \
+    libavdevice-dev \
+    libswresample-dev \
     libwayland-dev \
     libxkbcommon-dev \
     libpipewire-0.3-dev \
@@ -21,12 +26,9 @@ RUN apt-get update && apt-get install -y \
     libxrandr-dev \
     libxtst-dev \
     libasound2-dev \
-    clang \
-    libclang-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /usr/src/app
-ENV SQLX_OFFLINE=1
 
 COPY api.Cargo.toml ./Cargo.toml
 
@@ -42,9 +44,10 @@ RUN cargo build --release --package wayclip_api
 
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 \
     libpq5 \
+    libssh2-1 \
     ffmpeg \
     libwayland-client0 \
     libxkbcommon0 \
