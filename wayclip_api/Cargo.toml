@@ -3,6 +3,10 @@ name = "wayclip_api"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "wayclip_api"
+path = "src/main.rs"
+
 [dependencies]
 actix-web = "4"
 actix-session = { version = "0.7", features = ["cookie-session"] }
