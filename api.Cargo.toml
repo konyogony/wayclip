@@ -1,0 +1,7 @@
+[workspace]
+members = ["wayclip_api", "wayclip_core"]
+resolver = "2"
+
+[workspace.metadata.sqlx]
+database = "postgres"
+data-source = "DATABASE_URL"
