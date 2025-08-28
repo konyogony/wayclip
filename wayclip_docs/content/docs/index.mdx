@@ -2,3 +2,86 @@
 title: About Wayclip
 description: Learn more about us
 ---
+
+## What is Wayclip?
+
+Wayclip is an **open-source instant replay and screen recording tool** designed for modern Linux desktops, built from the ground up for **Wayland** and **PipeWire**.  
+
+It solves a long-standing gap: while Windows and macOS users have seamless tools for capturing replays and clips, Linux — especially Wayland — lacked a reliable and efficient solution. Wayclip changes that by combining **native performance**, **flexible workflows**, and **open-source transparency**.  
+
+
+## How It Started
+
+Wayclip began as a solo project when I realized there was no ready-to-use solution for instant replays on Linux. Four months ago, I built the first prototype: a recording engine that buffers the screen and lets you save the last few seconds with a hotkey.  
+
+From there, the project grew into a **complete ecosystem**: a recording daemon, a CLI for automation, a GUI for everyday users, and a self-hostable backend for storage and sharing. Almost the entire stack is written in **Rust** for performance and reliability, with a small amount of frontend code built using modern web technologies.  
+
+The guiding principle has always been simple: **build something I would want to use daily**.  
+
+
+## Core Features
+
+Wayclip is designed for both **casual users** and **power users**. Out of the box, it provides:  
+
+- ⚡ **Instant Replay** — buffer your screen and save the last few seconds with a single hotkey.  
+- 🖥️ **Wayland Native** — works seamlessly with Wayland and PipeWire.  
+- ✂️ **Built-in Editor** — quickly trim and edit clips before sharing.  
+- ☁️ **Cloud Storage (optional)** — store and share clips online, or keep them local for privacy.  
+- 🔗 **Easy Sharing** — generate links instantly for bug reports, tutorials, or collaboration.  
+- 🛠️ **Self-Hostable API** — run your own backend for complete control over storage and data.  
+
+
+## The Ecosystem
+
+Wayclip is not just one app — it’s a set of tools that work together:  
+
+- **wayclip_core** — the low-level daemon and recording engine built on PipeWire + FFmpeg.  
+- **wayclip_gui** *(coming soon)* — a Tauri-based desktop application (under active development, optimized for Wayland).  
+- **wayclip_cli** — a command-line interface for automation, scripting, and minimal setups.  
+- **wayclip_docs** — documentation powered by Fumadocs.  
+- **wayclip_api** — a self-hostable backend for clip storage, management, and sharing.  
+- **wayclip_dash** *(coming soon)* — a web dashboard for managing your account, billing and more.
+
+
+## Pricing & Storage
+
+Wayclip is **completely free to use** for local recordings. Cloud storage is optional and billed only if you need more space for sharing.  
+
+- **Free** — 2GB cloud storage, unlimited local recording.  
+- **Basic ($3.99)** — 50GB cloud storage.  
+- **Plus ($6.99)** — 200GB cloud storage.  
+- **Pro ($14.99)** — 1TB cloud storage.  
+
+This keeps the core app open and accessible to everyone, while giving creators and teams room to scale.  
+
+
+## Open Source & Community
+
+Wayclip is **MIT-licensed** and developed in the open. You can inspect the code, contribute, or fork it for your own use cases.  
+
+- [View on GitHub](https://github.com/konyogony/wayclip)  
+- [Join our Discord community](https://discord.gg/BrXAHknFE6)  
+- [Read the documentation](/docs)  
+
+We believe Linux users deserve the same polished, modern tools as any other platform — and we’re building them together.  
+
+
+## Roadmap
+
+- ✅ Core recording engine (done)  
+- ✅ CLI (launching with release)  
+- 🚧 GUI app (in progress, optimized for Wayland)  
+- 🚧 Dashboard (coming soon)  
+- 🌐 Windows support
+
+
+## Why Wayclip?
+
+Wayclip is more than just another screen recorder. It’s:  
+
+- **Native to Linux** — built for Wayland + PipeWire, not a port or workaround.  
+- **Performance-driven** — optimized with Rust for speed and low overhead.  
+- **Flexible** — from hotkey replays to automation scripts and self-hosted APIs.  
+- **Community-first** — fully open source, shaped by real Linux users.  
+
+Wayclip is here to bring **instant replay to Linux**, finally — without compromises.  

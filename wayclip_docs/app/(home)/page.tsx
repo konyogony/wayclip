@@ -1,6 +1,6 @@
-import { Button } from '@/components/ui/button';
 import Link from 'next/link';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
     CheckCircle,
@@ -218,7 +218,7 @@ export default function HomePage() {
                             it better.
                         </p>
                         <div className='flex flex-col sm:flex-row gap-4 justify-center mb-12'>
-                            <Button variant='outline' size='lg' className='px-6 py-3 bg-transparent' asChild>
+                            <Button variant='outline' className='px-6 py-3 bg-transparent' asChild>
                                 <a
                                     href='https://github.com/konyogony/wayclip'
                                     target='_blank'
@@ -228,7 +228,7 @@ export default function HomePage() {
                                     View on GitHub
                                 </a>
                             </Button>
-                            <Button variant='outline' size='lg' className='px-6 py-3 bg-transparent' asChild>
+                            <Button variant='outline' className='px-6 py-3 bg-transparent' asChild>
                                 <a href='https://discord.gg/BrXAHknFE6' target='_blank' rel='noopener norefferer'>
                                     <Users className='w-5 h-5 mr-2' />
                                     Join Community
@@ -262,8 +262,8 @@ export default function HomePage() {
                                 <span className='font-bold text-xl'>Wayclip</span>
                             </div>
                             <p className='text-muted-foreground mb-4 max-w-md'>
-                                An open-source instant replay tool for modern Linux desktops. Built with ♡ for the Linux
-                                community.
+                                An open-source instant replay tool for modern Linux desktops. Built with ❤️ for the
+                                Linux community.
                             </p>
                         </div>
                         <div>
