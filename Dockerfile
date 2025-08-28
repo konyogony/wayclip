@@ -1,26 +1,38 @@
 # STAGE 1: Build the application
 FROM --platform=$BUILDPLATFORM rust:latest AS builder
 
-# Install the aarch64 target for cross-compilation
+# Enable the arm64 architecture in Debian's package manager
+RUN dpkg --add-architecture arm64
+
+# Install the aarch64 target for Rust
 RUN rustup target add aarch64-unknown-linux-gnu
 
-# Install build dependencies and the cross-compilation toolchain for ARM64
+# Install build dependencies, the cross-compilation toolchain,
+# and the development libraries FOR THE ARM64 TARGET.
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Native build tools for the amd64 host
     build-essential \
     pkg-config \
     clang \
-    # The C cross-compiler and linker for ARM64
+    # Cross-compilation toolchain
     gcc-aarch64-linux-gnu \
-    # The assembler and other binary utilities
     binutils-aarch64-linux-gnu \
-    # --- FIX: Add the C standard library headers for the target architecture ---
     libc6-dev-arm64-cross \
-    # Development libraries
-    libssl-dev libpq-dev libssh2-1-dev \
-    ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libavfilter-dev libavdevice-dev libswresample-dev \
-    libwayland-dev libxkbcommon-dev libpipewire-0.3-dev libdbus-1-dev \
-    libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-    libx11-dev libxrandr-dev libxtst-dev libasound2-dev \
+    # Development packages for the arm64 target architecture
+    libssl-dev:arm64 \
+    libpq-dev:arm64 \
+    libssh2-1-dev:arm64 \
+    libavcodec-dev:arm64 libavformat-dev:arm64 libavutil-dev:arm64 libswscale-dev:arm64 libavfilter-dev:arm64 libavdevice-dev:arm64 libswresample-dev:arm64 \
+    libwayland-dev:arm64 \
+    libxkbcommon-dev:arm64 \
+    libpipewire-0.3-dev:arm64 \
+    libdbus-1-dev:arm64 \
+    libgstreamer1.0-dev:arm64 \
+    libgstreamer-plugins-base1.0-dev:arm64 \
+    libx11-dev:arm64 \
+    libxrandr-dev:arm64 \
+    libxtst-dev:arm64 \
+    libasound2-dev:arm64 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /usr/src/app
@@ -43,7 +55,11 @@ COPY . .
 
 # Build the application, checking the TARGETPLATFORM variable
 ARG TARGETPLATFORM
+# --- FIX: Explicitly set OpenSSL env vars to bypass pkg-config issues ---
 RUN if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
+    export PKG_CONFIG_PATH="/usr/lib/aarch64-linux-gnu/pkgconfig" && \
+    export OPENSSL_LIB_DIR="/usr/lib/aarch64-linux-gnu" && \
+    export OPENSSL_INCLUDE_DIR="/usr/include/aarch64-linux-gnu" && \
     cargo build --release --package wayclip_api --target aarch64-unknown-linux-gnu; \
     else \
     cargo build --release --package wayclip_api; \
