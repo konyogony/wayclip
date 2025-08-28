@@ -11,9 +11,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     clang \
     # The C cross-compiler and linker for ARM64
     gcc-aarch64-linux-gnu \
-    # --- FIX: Add binutils for the target architecture ---
-    # This provides the assembler ('as') and other tools needed by GCC.
+    # The assembler and other binary utilities
     binutils-aarch64-linux-gnu \
+    # --- FIX: Add the C standard library headers for the target architecture ---
+    libc6-dev-arm64-cross \
     # Development libraries
     libssl-dev libpq-dev libssh2-1-dev \
     ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libavfilter-dev libavdevice-dev libswresample-dev \
