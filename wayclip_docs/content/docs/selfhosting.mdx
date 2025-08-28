@@ -1,0 +1,203 @@
+---
+title: Self-Hosting Guide
+description: Learn how to deploy your own instance of the Wayclip API server.
+---
+import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
+import { Steps } from 'fumadocs-ui/components/steps';
+
+# Self-Hosting Guide
+
+The Wayclip API is the backend service that powers clip sharing, authentication, and storage. You can run your own instance of the API for personal use or for your team. This guide will walk you through setting up the server using Docker.
+
+## Prerequisites
+
+Before you begin, make sure you have the following:
+
+-   A server (a VPS or a home server works great).
+-   **Docker** and **Docker Compose** installed on your server.
+-   A **GitHub OAuth Application** for handling user logins.
+-   A domain name or a public IP address for your server.
+
+## Setup Instructions
+
+<Steps>
+### Step 1: Get the Required Files
+
+First, you need the `docker-compose.yml` file to define the services and an `.env.template` to configure your instance. Create a directory for your Wayclip API on your server and create the files as shown below.
+
+```yaml
+services:
+  api:
+    image: konyogonydev/wayclip-api:latest
+    container_name: wayclip_api
+    pull_policy: always
+    env_file:
+      - .env
+    ports:
+      - "8008:8080" # Host port:Container port
+    volumes:
+      - ./uploads:/usr/src/app/uploads
+    depends_on:
+      - wayclip_db
+    restart: unless-stopped
+
+  wayclip_db:
+    image: postgres:16-alpine
+    container_name: wayclip_db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+```
+
+Next, create a file named `.env.template` to list all the required configuration variables. You will copy this to a `.env` file and fill it out in the next step.
+
+```
+# -----------------------------
+# Database Configuration
+# -----------------------------
+POSTGRES_USER=
+POSTGRES_PASSWORD=
+POSTGRES_DB=
+DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@wayclip_db:5432/${POSTGRES_DB}
+
+# -----------------------------
+# Authentication
+# -----------------------------
+JWT_SECRET=
+GITHUB_CLIENT_ID=
+GITHUB_CLIENT_SECRET=
+
+# -----------------------------
+# General Server Settings
+# -----------------------------
+PUBLIC_URL=
+DISCORD_WEBHOOK_URL=
+
+# -----------------------------
+# Storage Configuration
+# -----------------------------
+STORAGE_TYPE=
+LOCAL_STORAGE_PATH=
+
+# -- SFTP (only if STORAGE_TYPE=SFTP)
+SFTP_HOST=
+SFTP_PORT=
+SFTP_USER=
+SFTP_PASSWORD=
+SFTP_REMOTE_PATH=
+SFTP_PUBLIC_URL=
+
+# -----------------------------
+# User Tier Limits
+# -----------------------------
+LIMIT_FREE=
+LIMIT_TIER1=
+LIMIT_TIER2=
+LIMIT_TIER3=
+```
+
+### Step 2: Configure Your Instance
+
+Copy the template to a new file named `.env`.
+
+```bash
+cp .env.template .env
+```
+Now, open `.env` and fill in the values according to the instructions below.
+
+#### Database Configuration
+These variables are used by the PostgreSQL database container.
+
+-   `POSTGRES_USER`: The username for your database.
+-   `POSTGRES_PASSWORD`: A secure password for the database user.
+-   `POSTGRES_DB`: The name of the database.
+-   `DATABASE_URL`: The connection string for the API. **You should not need to change the default value**, as it's configured to connect to the Docker database service (`wayclip_db`).
+
+#### Authentication
+These are required for securing your API and handling user logins.
+
+-   `JWT_SECRET`: A long, random, and secret string used to sign authentication tokens. You can generate one with `openssl rand -hex 32`.
+-   `GITHUB_CLIENT_ID` & `GITHUB_CLIENT_SECRET`: Credentials from your GitHub OAuth App. To create one:
+    1.  Go to **GitHub > Settings > Developer settings > OAuth Apps > New OAuth App**.
+    2.  Set the **Authorization callback URL** to `http://<YOUR_PUBLIC_URL>/auth/callback`. For example, if your `PUBLIC_URL` is `https://wayclip.example.com`, the callback URL will be `https://wayclip.example.com/auth/callback`.
+
+#### General Settings
+-   `PUBLIC_URL`: The public-facing URL of your API instance. This is crucial as it's used to generate the final shareable clip URLs. Example: `https://wayclip.example.com`.
+-   `DISCORD_WEBHOOK_URL` (Optional): If you want to receive notifications when a clip is reported, provide a Discord webhook URL here.
+
+#### Storage Configuration
+Wayclip supports two storage backends: `LOCAL` and `SFTP`.
+
+<Tabs items={['Local Storage', 'SFTP Storage']}>
+    <Tab value="Local Storage">
+        This is the simplest option. Files are stored directly on the server running Docker.
+
+        - `STORAGE_TYPE`: Set to `LOCAL`.
+        - `LOCAL_STORAGE_PATH`: The path *inside the container* where files are stored. The `docker-compose.yml` maps the local `./uploads` directory to `/usr/src/app/uploads`, so you should set this to:
+        ```
+        LOCAL_STORAGE_PATH=/usr/src/app/uploads
+        ```
+
+    </Tab>
+    <Tab value="SFTP Storage">
+        This option uploads files to a remote SFTP server. This is useful for separating storage from your application server.
+
+        - `STORAGE_TYPE`: Set to `SFTP`.
+        - `SFTP_HOST`: The hostname or IP of your SFTP server.
+        - `SFTP_PORT`: The port for your SFTP server (defaults to `22`).
+        - `SFTP_USER`: The username for SFTP login.
+        - `SFTP_PASSWORD`: The password for the SFTP user.
+        - `SFTP_REMOTE_PATH`: The absolute path on the SFTP server where you want to store clips (e.g., `/var/www/clips`).
+        - `SFTP_PUBLIC_URL`: The public URL that maps to your `SFTP_REMOTE_PATH`. This is how clips will be accessed. Example: `https://cdn.example.com/clips`.
+    </Tab>
+</Tabs>
+
+#### User Tier Limits
+Set the storage quota for each subscription tier. The format supports `KB`, `MB`, `GB`, and `TB`.
+
+- `LIMIT_FREE`: Storage limit for free users (e.g., `2GB`).
+- `LIMIT_TIER1`, `LIMIT_TIER2`, `LIMIT_TIER3`: Limits for paid tiers.
+
+### Step 3: Run the Server
+With your `.env` file configured, you can start the server.
+
+```bash
+docker-compose up -d
+```
+This command will pull the latest `wayclip-api` and `postgres` images, create the database, and start the API server in the background.
+
+<Callout title="Server Port">
+The API runs on port `8080` inside the container, which is mapped to port `8008` on your host machine. If you use a reverse proxy like Nginx, you should proxy requests to `http://127.0.0.1:8008`.
+</Callout>
+
+You can check the logs to ensure everything is running correctly:
+```bash
+docker-compose logs -f api
+```
+
+### Step 4: Configure Your Wayclip Client
+Finally, open the Wayclip app or CLI settings and update the **API URL** to point to your new self-hosted instance (`PUBLIC_URL`).
+
+You're all set! You are now running your own private Wayclip instance.
+
+</Steps>
+
+## Updating Your Instance
+
+To update your API to the latest version, run the following commands in your Wayclip API directory:
+
+```bash
+# Pull the latest Docker image
+docker-compose pull api
+
+# Recreate the container with the new image
+docker-compose up -d
+```
+The database migrations run automatically, so your data will be preserved.

@@ -1,10 +1,14 @@
+# STAGE 1: Build the application
 FROM --platform=$BUILDPLATFORM rust:latest AS builder
+
+RUN rustup target add aarch64-unknown-linux-gnu
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     pkg-config \
     clang \
     gcc-aarch64-linux-gnu \
+    # Development libraries
     libssl-dev libpq-dev libssh2-1-dev \
     ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libavfilter-dev libavdevice-dev libswresample-dev \
     libwayland-dev libxkbcommon-dev libpipewire-0.3-dev libdbus-1-dev \
@@ -14,7 +18,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /usr/src/app
 
-COPY .cargo ./.cargo
+RUN mkdir -p .cargo && \
+    echo '[target.aarch64-unknown-linux-gnu]' >> .cargo/config.toml && \
+    echo 'linker = "aarch64-linux-gnu-gcc"' >> .cargo/config.toml
 
 COPY api.Cargo.toml ./Cargo.toml
 COPY Cargo.lock ./
@@ -40,6 +46,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 ARG TARGETPLATFORM
-COPY --from=builder /usr/src/app/target/${TARGETPLATFORM#linux/}/release/wayclip_api /usr/local/bin/
+COPY --from=builder /usr/src/app/target/$(if [ "$TARGETPLATFORM" = "linux/arm64" ]; then echo "aarch64-unknown-linux-gnu/release"; else echo "release"; fi)/wayclip_api /usr/local/bin/
 
 ENTRYPOINT ["/usr/local/bin/wayclip_api"]
