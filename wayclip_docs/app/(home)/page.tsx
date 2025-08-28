@@ -41,7 +41,7 @@ export default function HomePage() {
                     </p>
 
                     <div className='flex flex-col sm:flex-row gap-4 justify-center mb-16'>
-                        <Button className='px-8 py-3'>
+                        <Button className='px-8 py-3' variant={'shadcn'}>
                             <Download className='w-5 h-5 mr-2' />
                             Download App
                             <ArrowRight className='w-4 h-4 ml-2' />
@@ -193,7 +193,7 @@ export default function HomePage() {
                                             </li>
                                         ))}
                                     </ul>
-                                    <Button asChild className='px-6 py-3 mt-auto'>
+                                    <Button asChild className='px-6 py-3 mt-auto' variant={'outline'} size={'sm'}>
                                         <a href='dash.wayclip.com'>
                                             Purchase <ArrowRight />
                                         </a>

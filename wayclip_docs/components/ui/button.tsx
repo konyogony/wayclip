@@ -3,6 +3,7 @@ import { Slot } from '@radix-ui/react-slot';
 import { cn } from '@/lib/utils';
 
 const variants = {
+    shadcn: 'text-primary-foreground shadow-xs hover:bg-primary/90',
     primary: 'bg-fd-primary text-fd-primary-foreground hover:bg-fd-primary/80',
     outline: 'border hover:bg-fd-accent hover:text-fd-accent-foreground',
     ghost: 'hover:bg-fd-accent hover:text-fd-accent-foreground',
