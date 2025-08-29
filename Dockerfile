@@ -9,6 +9,7 @@ RUN apt-get update && \
         apt-get update && \
         apt-get install -y --no-install-recommends \
             build-essential pkg-config \
+            libclang-15-dev \
             gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu libc6-dev-arm64-cross \
             libssl-dev:arm64 libpq-dev:arm64 libssh2-1-dev:arm64 \
             libavcodec-dev:arm64 libavformat-dev:arm64 libavutil-dev:arm64 libswscale-dev:arm64 libavfilter-dev:arm64 libavdevice-dev:arm64 libswresample-dev:arm64 \
@@ -18,6 +19,7 @@ RUN apt-get update && \
     else \
         apt-get install -y --no-install-recommends \
             build-essential pkg-config \
+            libclang-15-dev \
             libssl-dev libpq-dev libssh2-1-dev \
             libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libavfilter-dev libavdevice-dev libswresample-dev \
             libwayland-dev libxkbcommon-dev libpipewire-0.3-dev libdbus-1-dev \
@@ -59,6 +61,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 ARG TARGETPLATFORM
-COPY --from=builder /usr/src/app/target/$(if [ "$TARGETPLATFORM" = "linux/arm64" ]; then echo "aarch64-unknown-linux-gnu-release"; else echo "release"; fi)/wayclip_api /usr/local/bin/
+COPY --from=builder /usr/src/app/target/$(if [ "$TARGETPLATFORM" = "linux/arm64" ]; then echo "aarch64-unknown-linux-gnu/release"; else echo "release"; fi)/wayclip_api /usr/local/bin/
 
 ENTRYPOINT ["/usr/local/bin/wayclip_api"]
