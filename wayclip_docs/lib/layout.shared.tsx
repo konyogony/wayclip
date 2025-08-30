@@ -6,7 +6,6 @@ export const baseOptions = (): BaseLayoutProps => {
             title: <>Wayclip</>,
         },
         githubUrl: 'https://github.com/konyogony/wayclip',
-        themeSwitch: { enabled: false },
         links: [
             {
                 text: 'Docs',
