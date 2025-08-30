@@ -2,7 +2,7 @@ FROM oven/bun:latest AS builder
 
 WORKDIR /app
 
-COPY package.json bun.lockb tsconfig.json ./
+COPY package.json bun.lockb tsconfig.json next.config.mjs source.config.ts ./
 
 RUN bun install --immutable
 
