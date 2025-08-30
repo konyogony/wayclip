@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
+import { Button } from '@/components/ui/shadcn-button';
 import { Badge } from '@/components/ui/badge';
 import {
     CheckCircle,
@@ -41,7 +41,7 @@ export default function HomePage() {
                     </p>
 
                     <div className='flex flex-col sm:flex-row gap-4 justify-center mb-16'>
-                        <Button className='px-8 py-3' variant={'shadcn'}>
+                        <Button className='px-8 py-3'>
                             <Download className='w-5 h-5 mr-2' />
                             Download App
                             <ArrowRight className='w-4 h-4 ml-2' />
