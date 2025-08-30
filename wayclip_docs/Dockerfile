@@ -1,13 +1,20 @@
-FROM oven/bun:latest
+FROM oven/bun:latest AS builder
+
+WORKDIR /app
+COPY . .
+RUN bun install
+RUN bun run build
+
+FROM node:20-slim
 
 WORKDIR /app
 
-COPY . .
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/public ./public
 
-RUN bun install
+EXPOSE 3003
+ENV HOSTNAME="0.0.0.0"
+ENV PORT="3003"
 
-RUN bun run build
-
-EXPOSE 3030
-
-CMD ["bun", "run", "start", "--port", "3030", "--hostname", "0.0.0.0"]
+CMD ["node", "server.js"]
