@@ -34,6 +34,8 @@ RUN mkdir -p .cargo && \
     echo '[target.aarch64-unknown-linux-gnu]' >> .cargo/config.toml && \
     echo 'linker = "aarch64-linux-gnu-gcc"' >> .cargo/config.toml
 
+RUN cargo install sqlx-cli --no-default-features --features postgres
+
 COPY api.Cargo.toml ./Cargo.toml
 COPY Cargo.lock ./
 COPY wayclip_api/Cargo.toml ./wayclip_api/
@@ -43,11 +45,11 @@ RUN cargo fetch
 COPY . .
 
 RUN if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
-    export CC_aarch64_unknown_linux_gnu="aarch64-linux-gnu-gcc" && \
-    export PKG_CONFIG="aarch64-linux-gnu-pkg-config" && \
-    cargo build --release --package wayclip_api --target aarch64-unknown-linux-gnu; \
+        export CC_aarch64_unknown_linux_gnu="aarch64-linux-gnu-gcc" && \
+        export PKG_CONFIG="aarch64-linux-gnu-pkg-config" && \
+        cargo build --release --package wayclip_api --target aarch64-unknown-linux-gnu; \
     else \
-    cargo build --release --package wayclip_api; \
+        cargo build --release --package wayclip_api; \
     fi
 
 RUN mkdir /out && \
@@ -55,7 +57,8 @@ RUN mkdir /out && \
         cp /usr/src/app/target/aarch64-unknown-linux-gnu/release/wayclip_api /out/; \
     else \
         cp /usr/src/app/target/release/wayclip_api /out/; \
-    fi
+    fi && \
+    cp /usr/src/app/.cargo/bin/sqlx /out/
 
 FROM debian:bookworm-slim
 
@@ -66,5 +69,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /out/wayclip_api /usr/local/bin/
+COPY --from=builder /out/sqlx /usr/local/bin/
 
 ENTRYPOINT ["/usr/local/bin/wayclip_api"]
