@@ -43,6 +43,7 @@ async fn main() -> std::io::Result<()> {
     let config = Settings::new().expect("Failed to load configuration");
 
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let redirect_uri = env::var("REDIRECT_URL").expect("REDIRECT_URL must be set");
     let pool = db::create_pool(&database_url)
         .await
         .expect("Failed to create database pool.");
@@ -54,8 +55,8 @@ async fn main() -> std::io::Result<()> {
     let auth_url = AuthUrl::new("https://github.com/login/oauth/authorize".to_string()).unwrap();
     let token_url =
         TokenUrl::new("https://github.com/login/oauth/access_token".to_string()).unwrap();
-
-    let redirect_url = RedirectUrl::new("http://127.0.0.1:8080/auth/callback".to_string()).unwrap();
+    let redirect_url =
+        RedirectUrl::new(format!("{}/auth/callback", redirect_uri).to_string()).unwrap();
 
     let client = BasicClient::new(
         github_client_id,
@@ -123,7 +124,7 @@ async fn main() -> std::io::Result<()> {
             .service(clip_handler::serve_clip_raw)
             .service(clip_handler::report_clip)
     })
-    .bind(("127.0.0.1", 8080))?
+    .bind(("0.0.0.0", 8080))?
     .run()
     .await
 }
